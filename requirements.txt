@@ -5,3 +5,6 @@ opencv-python
 matplotlib
 scikit-learn
 pytest
+fastapi
+uvicorn[standard]
+python-multipart
