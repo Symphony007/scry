@@ -1,5 +1,3 @@
-# core/dct_embedder.py
-
 import numpy as np
 from PIL import Image
 from pathlib import Path

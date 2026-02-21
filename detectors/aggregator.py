@@ -1,3 +1,7 @@
+# detectors/aggregator.py
+
+from __future__ import annotations
+
 import numpy as np
 from detectors.base_detector import DetectorResult, Verdict, Reliability, probability_to_verdict
 
@@ -155,12 +159,14 @@ class ScoreAggregator:
         ]
 
         notes_parts = [
-            f"Weighted aggregation across {len([w for w in weights_used.values() if w > 0])} "
+            f"Weighted aggregation across "
+            f"{len([w for w in weights_used.values() if w > 0])} "
             f"active detectors (total weight: {total_weight:.1f})."
         ]
         if unreliable:
             notes_parts.append(
-                f"Low-reliability detectors in active set: {', '.join(unreliable)}. "
+                f"Low-reliability detectors in active set: "
+                f"{', '.join(unreliable)}. "
                 f"Interpret results with caution."
             )
 
@@ -173,3 +179,34 @@ class ScoreAggregator:
             payload_estimate  = payload_estimate,
             notes             = " ".join(notes_parts),
         )
+
+
+def build_type_aware_aggregator(classification_result) -> ScoreAggregator:    
+    """
+    Build a ScoreAggregator with weights selected for the detected image type.
+
+    This is the single function that connects Phase 4 type classification
+    to Phase 2 score aggregation — the architectural fix for the Mandrill
+    problem.
+
+    Args:
+        classification_result: ClassificationResult from ImageTypeClassifier
+
+    Returns:
+        ScoreAggregator configured with type-appropriate detector weights.
+
+    Usage:
+        clf    = ImageTypeClassifier()
+        result = clf.classify(image)
+        agg    = build_type_aware_aggregator(result)
+        final  = agg.aggregate(detector_results)
+    """
+    from ml.type_classifier import WEIGHT_TABLES
+    from ml.type_features import ImageType
+
+    weight_table = WEIGHT_TABLES.get(
+        classification_result.image_type,
+        WEIGHT_TABLES[ImageType.UNKNOWN],
+    )
+
+    return ScoreAggregator(weights=weight_table)
