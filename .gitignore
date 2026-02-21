@@ -1,5 +1,4 @@
-@"
-venv/
+﻿venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -9,4 +8,5 @@ dist/
 build/
 .env
 data/models/
-"@ | Set-Content -Path ".gitignore" -Encoding UTF8
+web/frontend/node_modules/
+web/static/
