@@ -1,5 +1,3 @@
-# detectors/aggregator.py
-
 import numpy as np
 from detectors.base_detector import DetectorResult, Verdict, Reliability, probability_to_verdict
 

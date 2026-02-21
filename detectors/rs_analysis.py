@@ -1,5 +1,3 @@
-# detectors/rs_analysis.py
-
 import numpy as np
 from detectors.base_detector import (
     BaseDetector,
