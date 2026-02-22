@@ -252,9 +252,8 @@ def _invoke_embedder(
         )
 
     elif method == "dwt":
-        raise NotImplementedError(
-            "DWT embedder is not yet implemented — planned for Phase 7."
-        )
+        from core.dwt_embedder import embed_dwt
+        return embed_dwt(image_path, message, output_path)
 
     else:
         raise ValueError(f"Unknown embedding method '{method}'.")
