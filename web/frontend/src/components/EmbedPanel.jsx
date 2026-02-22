@@ -33,26 +33,22 @@ export default function EmbedPanel() {
       fd.append('file', file)
       fd.append('message', message)
 
-      const res = await axios.post('/api/embed', fd, {
-        responseType: 'blob'
-      })
+      const res = await axios.post('/api/embed', fd, { responseType: 'blob' })
 
-      // Trigger download of stego image
-      const url      = URL.createObjectURL(res.data)
-      const link     = document.createElement('a')
-      const ext      = /\.(jpg|jpeg)$/i.test(file.name) ? '.jpg' : '.png'
-      link.href      = url
-      link.download  = `stego_${file.name.replace(/\.[^.]+$/, '')}${ext}`
+      const url  = URL.createObjectURL(res.data)
+      const link = document.createElement('a')
+      const inputExt = file.name.split('.').pop().toLowerCase()
+      const ext = ['jpg', 'jpeg', 'webp'].includes(inputExt) ? '.png' : '.' + inputExt
+      link.href     = url
+      link.download = `scry_${file.name.replace(/\.[^.]+$/, '')}${ext}`
       link.click()
       URL.revokeObjectURL(url)
       setDone(true)
     } catch (e) {
-      // Axios blob error — parse error message from blob
       if (e.response?.data instanceof Blob) {
         const text = await e.response.data.text()
         try {
-          const parsed = JSON.parse(text)
-          setError(parsed.detail || 'Embedding failed.')
+          setError(JSON.parse(text).detail || 'Embedding failed.')
         } catch {
           setError('Embedding failed.')
         }
@@ -64,188 +60,318 @@ export default function EmbedPanel() {
     }
   }
 
-  const charCount   = message.length
-  const byteCount   = new TextEncoder().encode(message).length
+  const byteCount = new TextEncoder().encode(message).length
 
   return (
-    <div>
-      <h2 style={styles.heading}>Embed a Hidden Message</h2>
-      <p style={styles.subtext}>
-        Upload a cover image and type a message. Scry will automatically
-        select the correct embedding method for the image format and
-        return the stego image as a download.
-      </p>
+    <div style={styles.grid}>
 
-      {/* Drop zone */}
-      <div
-        onDrop={handleDrop}
-        onDragOver={e => e.preventDefault()}
-        onClick={() => document.getElementById('embed-input').click()}
-        style={styles.dropzone}
-      >
-        {preview
-          ? <img src={preview} alt="preview" style={styles.preview} />
-          : <p style={styles.dropText}>
-              Drag & drop a cover image here, or click to select
-            </p>
-        }
-        <input
-          id="embed-input"
-          type="file"
-          accept="image/*"
-          style={{ display: 'none' }}
-          onChange={e => handleFile(e.target.files[0])}
-        />
-      </div>
+      {/* Left — inputs */}
+      <div style={styles.column}>
 
-      {file && (
-        <p style={styles.filename}>
-          {file.name} — {(file.size / 1024).toFixed(1)} KB
-        </p>
-      )}
+        <div style={styles.sectionHeader}>
+          <div style={styles.sectionLabel}>01 — Cover Image</div>
+          <div style={styles.sectionDesc}>The image that will carry your hidden message.</div>
+        </div>
 
-      {/* Message input */}
-      <div style={styles.messageBox}>
-        <label style={styles.label}>Message to hide</label>
+        <div
+          onDrop={handleDrop}
+          onDragOver={e => e.preventDefault()}
+          onClick={() => document.getElementById('embed-input').click()}
+          style={{
+            ...styles.dropzone,
+            ...(file ? styles.dropzoneActive : {})
+          }}
+        >
+          {preview
+            ? <img src={preview} alt="preview" style={styles.preview} />
+            : <span style={styles.dropText}>Drop image or click to browse</span>
+          }
+          <input
+            id="embed-input"
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={e => handleFile(e.target.files[0])}
+          />
+        </div>
+
+        {file && (
+          <div style={styles.fileMeta}>
+            {file.name} &nbsp;·&nbsp; {(file.size / 1024).toFixed(1)} KB
+          </div>
+        )}
+
+        <div style={styles.sectionHeader}>
+          <div style={styles.sectionLabel}>02 — Message</div>
+          <div style={styles.sectionDesc}>UTF-8 text to hide. Unicode and emoji supported.</div>
+        </div>
+
         <textarea
           value={message}
           onChange={e => setMessage(e.target.value)}
-          placeholder="Type your secret message here... (supports Unicode and emoji 🌍)"
+          placeholder="Enter your secret message..."
           style={styles.textarea}
-          rows={4}
+          rows={5}
         />
-        <div style={styles.charInfo}>
-          <span style={styles.charCount}>
-            {charCount} chars / {byteCount} bytes
-          </span>
-          <span style={styles.charNote}>
-            Unicode characters use 2–4 bytes each
-          </span>
+
+        <div style={styles.charRow}>
+          <span>{message.length} chars</span>
+          <span>{byteCount} bytes</span>
         </div>
+
+        <button
+          onClick={handleSubmit}
+          disabled={!file || !message.trim() || loading}
+          style={{
+            ...styles.btn,
+            ...(!file || !message.trim() || loading ? styles.btnDisabled : {})
+          }}
+        >
+          {loading ? 'Embedding...' : 'Embed & Download'}
+        </button>
+
+        {error && <div style={styles.errorBox}>{error}</div>}
+
       </div>
 
-      {/* Format note */}
-      <div style={styles.infoBox}>
-        <p style={styles.infoText}>
-          <strong>PNG / BMP / TIFF:</strong> Spatial LSB embedding — lossless,
-          highest capacity, not suitable for social media sharing.
-        </p>
-        <p style={styles.infoText}>
-          <strong>JPEG:</strong> DCT coefficient embedding — survives one
-          recompression cycle at the same quality setting.
-        </p>
+      {/* Right — info + status */}
+      <div style={styles.column}>
+
+        <div style={styles.sectionHeader}>
+          <div style={styles.sectionLabel}>Format Behaviour</div>
+        </div>
+
+        <div style={styles.infoBlock}>
+          <div style={styles.infoRow}>
+            <span style={styles.infoKey}>PNG / BMP / TIFF</span>
+            <span style={styles.infoVal}>Spatial LSB — lossless, full capacity</span>
+          </div>
+          <div style={styles.divider} />
+          <div style={styles.infoRow}>
+            <span style={styles.infoKey}>JPEG</span>
+            <span style={styles.infoVal}>Converted to PNG before embedding</span>
+          </div>
+          <div style={styles.divider} />
+          <div style={styles.infoRow}>
+            <span style={styles.infoKey}>WebP lossless</span>
+            <span style={styles.infoVal}>Spatial LSB — same as PNG</span>
+          </div>
+        </div>
+
+        <div style={styles.sectionHeader}>
+          <div style={styles.sectionLabel}>Status</div>
+        </div>
+
+        <div style={styles.statusBlock}>
+          {!file && !done && (
+            <div style={styles.statusRow}>
+              <div style={{ ...styles.dot, background: '#2A2A2A' }} />
+              <span>Waiting for image</span>
+            </div>
+          )}
+          {file && !done && (
+            <div style={styles.statusRow}>
+              <div style={{ ...styles.dot, background: '#4A4A4A' }} />
+              <span>Ready — {file.name}</span>
+            </div>
+          )}
+          {loading && (
+            <div style={styles.statusRow}>
+              <div style={{ ...styles.dot, background: '#6B6B6B' }} />
+              <span>Processing...</span>
+            </div>
+          )}
+          {done && (
+            <div style={styles.statusRow}>
+              <div style={{ ...styles.dot, background: '#E8E8E8' }} />
+              <span style={{ color: '#E8E8E8' }}>Done — stego image downloaded</span>
+            </div>
+          )}
+        </div>
+
+        <div style={styles.noteBlock}>
+          <div style={styles.sectionLabel}>Note</div>
+          <p style={styles.noteText}>
+            Do not re-save or convert the output image after downloading.
+            Any lossy compression applied after embedding will destroy the hidden message.
+          </p>
+        </div>
+
       </div>
 
-      <button
-        onClick={handleSubmit}
-        disabled={!file || !message.trim() || loading}
-        style={{
-          ...styles.btn,
-          ...(!file || !message.trim() || loading ? styles.btnDisabled : {})
-        }}
-      >
-        {loading ? 'Embedding...' : 'Embed & Download'}
-      </button>
-
-      {error && <div style={styles.errorBox}>{error}</div>}
-
-      {done && (
-        <div style={styles.successBox}>
-          ✅ Message embedded successfully. Your stego image has been
-          downloaded. Keep the original filename structure if you plan
-          to decode it later.
-        </div>
-      )}
     </div>
   )
 }
 
 const styles = {
-  heading   : { color: '#7dd3fc', marginBottom: '0.5rem' },
-  subtext   : { color: '#64748b', fontSize: '0.88rem', margin: '0 0 1rem' },
-  dropzone  : {
-    border        : '2px dashed #334155',
-    borderRadius  : '10px',
-    padding       : '2rem',
-    textAlign     : 'center',
-    cursor        : 'pointer',
-    background    : '#1e293b',
-    minHeight     : '160px',
+  grid: {
+    display              : 'grid',
+    gridTemplateColumns  : '1fr 1fr',
+    gap                  : '64px',
+    alignItems           : 'start',
+  },
+  column: {
+    display       : 'flex',
+    flexDirection : 'column',
+    gap           : '20px',
+  },
+  sectionHeader: {
+    display       : 'flex',
+    flexDirection : 'column',
+    gap           : '4px',
+  },
+  sectionLabel: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    letterSpacing : '0.1em',
+    textTransform : 'uppercase',
+    color         : '#4A4A4A',
+  },
+  sectionDesc: {
+    fontSize      : '13px',
+    color         : '#6B6B6B',
+  },
+  dropzone: {
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '8px',
+    minHeight     : '200px',
     display       : 'flex',
     alignItems    : 'center',
     justifyContent: 'center',
+    cursor        : 'pointer',
+    background    : '#161616',
+    overflow      : 'hidden',
+    transition    : 'border-color 0.15s',
   },
-  dropText  : { color: '#475569', fontSize: '0.95rem' },
-  preview   : { maxHeight: '200px', maxWidth: '100%', borderRadius: '6px' },
-  filename  : { color: '#94a3b8', fontSize: '0.82rem', margin: '0.5rem 0' },
-  messageBox: { marginTop: '1.25rem' },
-  label     : {
-    display     : 'block',
-    color       : '#94a3b8',
-    fontSize    : '0.88rem',
-    marginBottom: '0.4rem',
-    fontWeight  : 500,
+  dropzoneActive: {
+    borderColor   : '#4A4A4A',
   },
-  textarea  : {
-    width          : '100%',
-    background     : '#0f172a',
-    border         : '1px solid #334155',
-    borderRadius   : '6px',
-    color          : '#e2e8f0',
-    fontSize       : '0.95rem',
-    padding        : '0.75rem',
-    resize         : 'vertical',
-    fontFamily     : 'inherit',
-    boxSizing      : 'border-box',
-    outline        : 'none',
+  dropText: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    color         : '#2A2A2A',
+    letterSpacing : '0.05em',
   },
-  charInfo  : {
+  preview: {
+    width         : '100%',
+    height        : '200px',
+    objectFit     : 'cover',
+    display       : 'block',
+  },
+  fileMeta: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    color         : '#4A4A4A',
+    marginTop     : '-8px',
+  },
+  textarea: {
+    width         : '100%',
+    background    : '#161616',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '8px',
+    color         : '#E8E8E8',
+    fontSize      : '13px',
+    fontFamily    : "'Inter', system-ui, sans-serif",
+    padding       : '12px 14px',
+    resize        : 'vertical',
+    outline       : 'none',
+    lineHeight    : '1.6',
+    boxSizing     : 'border-box',
+    transition    : 'border-color 0.15s',
+  },
+  charRow: {
     display        : 'flex',
     justifyContent : 'space-between',
-    marginTop      : '0.35rem',
+    fontFamily     : "'JetBrains Mono', monospace",
+    fontSize       : '11px',
+    color          : '#4A4A4A',
+    marginTop      : '-8px',
   },
-  charCount : { color: '#7dd3fc', fontSize: '0.78rem' },
-  charNote  : { color: '#475569', fontSize: '0.78rem' },
-  infoBox   : {
-    marginTop   : '1rem',
-    background  : '#0f172a',
-    border      : '1px solid #334155',
-    borderRadius: '8px',
-    padding     : '0.75rem 1rem',
+  btn: {
+    padding        : '12px 0',
+    background     : '#E8E8E8',
+    color          : '#0D0D0D',
+    border         : 'none',
+    borderRadius   : '8px',
+    cursor         : 'pointer',
+    fontFamily     : "'JetBrains Mono', monospace",
+    fontSize       : '11px',
+    letterSpacing  : '0.1em',
+    textTransform  : 'uppercase',
+    fontWeight     : 500,
+    transition     : 'background 0.15s',
   },
-  infoText  : {
-    color     : '#64748b',
-    fontSize  : '0.82rem',
-    margin    : '0.2rem 0',
+  btnDisabled: {
+    background     : '#1F1F1F',
+    color          : '#2A2A2A',
+    cursor         : 'not-allowed',
   },
-  btn       : {
-    marginTop   : '1rem',
-    padding     : '0.7rem 2.5rem',
-    background  : '#0ea5e9',
-    color       : '#fff',
-    border      : 'none',
-    borderRadius: '6px',
-    cursor      : 'pointer',
-    fontSize    : '1rem',
-    fontWeight  : 600,
+  errorBox: {
+    padding        : '12px 14px',
+    background     : '#161616',
+    border         : '1px solid #3A1A1A',
+    borderRadius   : '8px',
+    color          : '#A05050',
+    fontFamily     : "'JetBrains Mono', monospace",
+    fontSize       : '11px',
+    lineHeight     : '1.6',
   },
-  btnDisabled: { background: '#1e293b', color: '#475569', cursor: 'not-allowed' },
-  errorBox  : {
-    marginTop   : '1rem',
-    padding     : '1rem',
-    background  : '#450a0a',
-    border      : '1px solid #ef4444',
-    borderRadius: '6px',
-    color       : '#fca5a5',
-    fontSize    : '0.9rem',
+  infoBlock: {
+    border         : '1px solid #2A2A2A',
+    borderRadius   : '8px',
+    overflow       : 'hidden',
   },
-  successBox: {
-    marginTop   : '1rem',
-    padding     : '1rem',
-    background  : '#052e16',
-    border      : '1px solid #22c55e',
-    borderRadius: '6px',
-    color       : '#86efac',
-    fontSize    : '0.9rem',
+  infoRow: {
+    display        : 'flex',
+    flexDirection  : 'column',
+    gap            : '2px',
+    padding        : '12px 14px',
+  },
+  infoKey: {
+    fontFamily     : "'JetBrains Mono', monospace",
+    fontSize       : '11px',
+    color          : '#E8E8E8',
+    letterSpacing  : '0.03em',
+  },
+  infoVal: {
+    fontSize       : '12px',
+    color          : '#6B6B6B',
+  },
+  divider: {
+    borderTop      : '1px solid #2A2A2A',
+  },
+  statusBlock: {
+    padding        : '16px 14px',
+    background     : '#161616',
+    border         : '1px solid #2A2A2A',
+    borderRadius   : '8px',
+  },
+  statusRow: {
+    display        : 'flex',
+    alignItems     : 'center',
+    gap            : '10px',
+    fontFamily     : "'JetBrains Mono', monospace",
+    fontSize       : '11px',
+    color          : '#4A4A4A',
+  },
+  dot: {
+    width          : '6px',
+    height         : '6px',
+    borderRadius   : '50%',
+    flexShrink     : 0,
+  },
+  noteBlock: {
+    padding        : '14px',
+    border         : '1px solid #2A2A2A',
+    borderRadius   : '8px',
+    display        : 'flex',
+    flexDirection  : 'column',
+    gap            : '8px',
+  },
+  noteText: {
+    fontSize       : '12px',
+    color          : '#4A4A4A',
+    margin         : 0,
+    lineHeight     : '1.7',
   },
 }

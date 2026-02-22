@@ -302,14 +302,10 @@ def _edge_stats(gray: np.ndarray) -> tuple[float, float, float]:
     edge_density  = float(np.mean(edge_mask))
     edge_sharpness = float(np.mean(mag[edge_mask])) if edge_mask.any() else 0.0
 
-    # Linearity: measure how much edge energy is concentrated in
-    # horizontal and vertical directions vs diagonal.
-    # High horizontal/vertical fraction = UI/screenshot.
-    h_energy = float(np.mean(np.abs(gy[:h, :w])))
-    v_energy = float(np.mean(np.abs(gx[:h, :w])))
-    total    = h_energy + v_energy + 1e-8
-    linearity = float((h_energy + v_energy) / (np.mean(mag) + 1e-8))
-    linearity = float(np.clip(linearity, 0.0, 10.0) / 10.0)
+    linearity = float(np.clip(
+        (np.mean(np.abs(gy[:h, :w])) + np.mean(np.abs(gx[:h, :w]))) / (np.mean(mag) + 1e-8),
+        0.0, 10.0
+    ) / 10.0)
 
     return edge_density, edge_sharpness, linearity
 

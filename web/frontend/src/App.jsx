@@ -1,102 +1,115 @@
 import { useState } from 'react'
-import DetectPanel from './components/DetectPanel.jsx'
-import EmbedPanel from './components/EmbedPanel.jsx'
-import DecodePanel from './components/DecodePanel.jsx'
-
-const TABS = ['Embed', 'Decode']
+import EmbedPanel from './components/EmbedPanel'
+import DecodePanel from './components/DecodePanel'
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('Detect')
+  const [activeTab, setActiveTab] = useState('embed')
 
   return (
-    <div style={styles.app}>
+    <div style={styles.root}>
+
       <header style={styles.header}>
-        <h1 style={styles.title}>🔍 Scry</h1>
-        <p style={styles.subtitle}>Steganography Detection Engine</p>
+        <div>
+          <div style={styles.wordmark}>SCRY</div>
+          <div style={styles.tagline}>Steganography Engine</div>
+        </div>
       </header>
 
-      <nav style={styles.nav}>
-        {TABS.map(tab => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              ...styles.tabBtn,
-              ...(activeTab === tab ? styles.tabBtnActive : {})
-            }}
-          >
-            {tab}
-          </button>
-        ))}
-      </nav>
+      <div style={styles.tabBar}>
+        <button
+          style={{ ...styles.tab, ...(activeTab === 'embed' ? styles.tabActive : {}) }}
+          onClick={() => setActiveTab('embed')}
+        >
+          Embed
+        </button>
+        <button
+          style={{ ...styles.tab, ...(activeTab === 'decode' ? styles.tabActive : {}) }}
+          onClick={() => setActiveTab('decode')}
+        >
+          Decode
+        </button>
+      </div>
 
       <main style={styles.main}>
-        {activeTab === 'Detect' && <DetectPanel />}
-        {activeTab === 'Embed'  && <EmbedPanel />}
-        {activeTab === 'Decode' && <DecodePanel />}
+        {activeTab === 'embed' ? <EmbedPanel /> : <DecodePanel />}
       </main>
 
       <footer style={styles.footer}>
-        <p>Scry v0.1 — Honesty over hype. Every verdict is traceable.</p>
+        Scry — every verdict is traceable.
       </footer>
+
     </div>
   )
 }
 
 const styles = {
-  app: {
-    minHeight    : '100vh',
-    background   : '#0f1117',
-    color        : '#e2e8f0',
-    fontFamily   : "'Segoe UI', system-ui, sans-serif",
-    display      : 'flex',
-    flexDirection: 'column',
-    alignItems   : 'center',
+  root: {
+    minHeight       : '100vh',
+    background      : '#0D0D0D',
+    color           : '#6B6B6B',
+    fontFamily      : "'Inter', system-ui, sans-serif",
+    fontSize        : '14px',
+    lineHeight      : '1.6',
+    display         : 'flex',
+    flexDirection   : 'column',
   },
   header: {
-    textAlign : 'center',
-    padding   : '2rem 1rem 1rem',
+    padding         : '40px 48px 32px',
+    borderBottom    : '1px solid #2A2A2A',
   },
-  title: {
-    fontSize  : '2.5rem',
-    fontWeight: 700,
-    margin    : 0,
-    color     : '#7dd3fc',
+  wordmark: {
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '13px',
+    fontWeight      : 500,
+    letterSpacing   : '0.15em',
+    color           : '#E8E8E8',
+    marginBottom    : '4px',
   },
-  subtitle: {
-    color     : '#94a3b8',
-    margin    : '0.25rem 0 0',
-    fontSize  : '0.95rem',
+  tagline: {
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '11px',
+    letterSpacing   : '0.1em',
+    textTransform   : 'uppercase',
+    color           : '#4A4A4A',
   },
-  nav: {
-    display : 'flex',
-    gap     : '0.5rem',
-    margin  : '1.5rem 0 0',
+  tabBar: {
+    display         : 'flex',
+    gap             : '0',
+    borderBottom    : '1px solid #2A2A2A',
+    padding         : '0 48px',
   },
-  tabBtn: {
-    padding         : '0.6rem 2rem',
-    borderRadius    : '6px',
-    border          : '1px solid #334155',
-    background      : '#1e293b',
-    color           : '#94a3b8',
+  tab: {
+    padding         : '16px 0',
+    marginRight     : '32px',
+    background      : 'none',
+    border          : 'none',
+    borderBottom    : '1px solid transparent',
+    color           : '#4A4A4A',
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '11px',
+    letterSpacing   : '0.1em',
+    textTransform   : 'uppercase',
     cursor          : 'pointer',
-    fontSize        : '0.95rem',
-    transition      : 'all 0.15s',
+    transition      : 'color 0.15s',
+    marginBottom    : '-1px',
   },
-  tabBtnActive: {
-    background      : '#0ea5e9',
-    color           : '#fff',
-    border          : '1px solid #0ea5e9',
+  tabActive: {
+    color           : '#E8E8E8',
+    borderBottom    : '1px solid #E8E8E8',
   },
   main: {
-    width    : '100%',
-    maxWidth : '860px',
-    padding  : '2rem 1rem',
-    flex     : 1,
+    flex            : 1,
+    padding         : '48px',
+    maxWidth        : '960px',
+    width           : '100%',
+    alignSelf       : 'center',
   },
   footer: {
-    padding  : '1.5rem',
-    color    : '#475569',
-    fontSize : '0.8rem',
+    padding         : '24px 48px',
+    borderTop       : '1px solid #2A2A2A',
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '11px',
+    letterSpacing   : '0.05em',
+    color           : '#2A2A2A',
   },
 }

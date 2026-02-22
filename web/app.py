@@ -16,6 +16,7 @@ import uuid
 import tempfile
 import traceback
 from pathlib import Path
+from PIL import Image
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -213,10 +214,13 @@ async def embed(
 
         if info.embedding_domain == EmbeddingDomain.DCT:
             # DCT embedding via jpegio not available on Windows/Python 3.14.
-            # Fall back to spatial LSB on PNG — lossless, reliable, fully tested.
+            # Convert JPEG to PNG first, then spatial LSB embed.
             from core.embedder import embed as spatial_embed
-            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
-            spatial_embed(str(src_path), message, str(dst_path))
+            png_path  = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
+            Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
+            dst_path  = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+            spatial_embed(str(png_path), message, str(dst_path))
+            png_path.unlink(missing_ok=True)
             download_name = Path(file.filename).stem + "_stego.png"
 
         elif info.embedding_domain == EmbeddingDomain.SPATIAL:
