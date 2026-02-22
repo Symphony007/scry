@@ -1,4 +1,3 @@
-// src/components/EmbedPanel.jsx
 import { useState, useCallback } from 'react'
 import axios from 'axios'
 
@@ -41,8 +40,9 @@ export default function EmbedPanel() {
       // Trigger download of stego image
       const url      = URL.createObjectURL(res.data)
       const link     = document.createElement('a')
+      const ext      = /\.(jpg|jpeg)$/i.test(file.name) ? '.jpg' : '.png'
       link.href      = url
-      link.download  = `stego_${file.name.replace(/\.[^.]+$/, '')}.png`
+      link.download  = `stego_${file.name.replace(/\.[^.]+$/, '')}${ext}`
       link.click()
       URL.revokeObjectURL(url)
       setDone(true)

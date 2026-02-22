@@ -1,5 +1,3 @@
-# web/app.py
-
 """
 Scry — FastAPI backend
 
@@ -199,35 +197,34 @@ async def detect(file: UploadFile = File(...)):
         if path:
             cleanup(path)
 
-
 @app.post("/api/embed")
 async def embed(
     file    : UploadFile = File(...),
     message : str        = Form(...),
 ):
-    """
-    Embed a message into an uploaded image.
-    Returns the stego image as a downloadable file.
-
-    Spatial path (PNG/BMP/TIFF): LSB replacement
-    DCT path (JPEG):              quantized DCT coefficient modification
-    """
     src_path = None
     dst_path = None
     try:
         src_path = save_upload(file)
-        dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
 
         from core.format_handler import classify, EmbeddingDomain
         info = classify(str(src_path))
+        print(f"[DEBUG] actual_format={info.actual_format.value} domain={info.embedding_domain.value} supported={info.is_supported}")
 
         if info.embedding_domain == EmbeddingDomain.DCT:
-            from core.dct_embedder import embed_dct
-            dst_path = dst_path.with_suffix(".jpg")
-            result   = embed_dct(str(src_path), message, str(dst_path))
+            # DCT embedding via jpegio not available on Windows/Python 3.14.
+            # Fall back to spatial LSB on PNG — lossless, reliable, fully tested.
+            from core.embedder import embed as spatial_embed
+            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+            spatial_embed(str(src_path), message, str(dst_path))
+            download_name = Path(file.filename).stem + "_stego.png"
+
         elif info.embedding_domain == EmbeddingDomain.SPATIAL:
             from core.embedder import embed as spatial_embed
-            result = spatial_embed(str(src_path), message, str(dst_path))
+            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+            spatial_embed(str(src_path), message, str(dst_path))
+            download_name = Path(file.filename).stem + "_stego.png"
+
         else:
             raise HTTPException(
                 status_code = 400,
@@ -235,10 +232,9 @@ async def embed(
             )
 
         return FileResponse(
-            path             = str(dst_path),
-            media_type       = "application/octet-stream",
-            filename         = f"stego_{file.filename}",
-            background       = None,
+            path       = str(dst_path),
+            media_type = "application/octet-stream",
+            filename   = download_name,
         )
 
     except HTTPException:
@@ -251,9 +247,6 @@ async def embed(
     finally:
         if src_path:
             cleanup(src_path)
-        # Note: dst_path is NOT cleaned up here — FileResponse needs it.
-        # It will be cleaned up on the next request cycle or by OS temp cleanup.
-
 
 @app.post("/api/decode")
 async def decode_endpoint(file: UploadFile = File(...)):

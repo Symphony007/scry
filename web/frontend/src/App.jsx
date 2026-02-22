@@ -3,7 +3,7 @@ import DetectPanel from './components/DetectPanel.jsx'
 import EmbedPanel from './components/EmbedPanel.jsx'
 import DecodePanel from './components/DecodePanel.jsx'
 
-const TABS = ['Detect', 'Embed', 'Decode']
+const TABS = ['Embed', 'Decode']
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Detect')

@@ -1,13 +1,8 @@
+# core/dct_embedder.py
+
 import numpy as np
 from PIL import Image
 from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# Embedding Header Format (16 bits)
-# Bits 0-3  : Method ID  (0001=LSB spatial, 0010=DCT)
-# Bits 4-7  : Format code at encoding time
-# Bits 8-15 : Reserved (zeros)
-# ---------------------------------------------------------------------------
 
 METHOD_LSB = 0b0001
 METHOD_DCT = 0b0010
@@ -24,12 +19,6 @@ FORMAT_CODES_REVERSE = {v: k for k, v in FORMAT_CODES.items()}
 TERMINATOR  = [0] * 16
 BLOCK_SIZE  = 8
 
-# ---------------------------------------------------------------------------
-# Zigzag scan order for an 8x8 DCT block.
-# ZIGZAG_INDEX[row * 8 + col] = zigzag position of (row, col).
-# Pillow stores quantization tables in zigzag order, so we use this
-# to look up the Q value for any (row, col) position.
-# ---------------------------------------------------------------------------
 ZIGZAG_INDEX = [
      0,  1,  5,  6, 14, 15, 27, 28,
      2,  4,  7, 13, 16, 26, 29, 42,
@@ -41,11 +30,6 @@ ZIGZAG_INDEX = [
     35, 36, 48, 49, 57, 58, 62, 63,
 ]
 
-# ---------------------------------------------------------------------------
-# Mid-frequency DCT positions for embedding.
-# These are low-to-mid frequency positions (small zigzag index = smaller Q
-# values = more stable round-trips). DC coefficient (0,0) is never touched.
-# ---------------------------------------------------------------------------
 MID_FREQ_POSITIONS = [
     (0, 3), (0, 4),
     (1, 2), (1, 3),
@@ -54,19 +38,21 @@ MID_FREQ_POSITIONS = [
     (4, 0),
 ]
 
+# Coefficients with |quantized value| < STABILITY_THRESHOLD are skipped
+# in both embed and decode — they round unpredictably during recompression.
+STABILITY_THRESHOLD = 2
+
 
 # ---------------------------------------------------------------------------
 # Header helpers
 # ---------------------------------------------------------------------------
 
 def _build_header(method_id: int, format_code: int) -> list[int]:
-    """Build 16-bit header as a list of bits (MSB first)."""
     header_int = ((method_id & 0xF) << 12) | ((format_code & 0xF) << 8)
     return [(header_int >> i) & 1 for i in range(15, -1, -1)]
 
 
 def _parse_header(bits: list[int]) -> tuple[int, int]:
-    """Parse 16-bit header. Returns (method_id, format_code)."""
     if len(bits) < 16:
         raise ValueError("Header too short — fewer than 16 bits available.")
     header_int = 0
@@ -101,7 +87,7 @@ def _bits_to_text(bits: list[int]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# DCT helpers (scipy)
+# DCT helpers
 # ---------------------------------------------------------------------------
 
 def _dct_2d(block: np.ndarray) -> np.ndarray:
@@ -117,26 +103,15 @@ def _idct_2d(block: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Quantization table helpers
+# Quantization helpers
 # ---------------------------------------------------------------------------
 
 def _q_value(qtable_zigzag: list[int], row: int, col: int) -> int:
-    """Return the quantization step for DCT position (row, col)."""
     zz_idx = ZIGZAG_INDEX[row * 8 + col]
     return max(1, qtable_zigzag[zz_idx])
 
 
 def _get_jpeg_qtables(image_path: str) -> tuple[dict | None, int]:
-    """
-    Extract quantization tables and quality estimate from a JPEG.
-
-    Returns:
-        (qtables, quality)
-        qtables : dict {0: [64 ints zigzag], 1: [64 ints zigzag]}
-                  in the exact format Pillow's qtables= parameter expects.
-                  None if not a JPEG or tables unavailable.
-        quality : estimated quality int (fallback 85)
-    """
     try:
         with Image.open(image_path) as img:
             if not hasattr(img, "quantization") or not img.quantization:
@@ -145,9 +120,6 @@ def _get_jpeg_qtables(image_path: str) -> tuple[dict | None, int]:
             luma    = qtables.get(0, [])
             if not luma:
                 return qtables, 85
-            # Estimate quality from sum of luma Q table values.
-            # Standard JPEG luma table at quality 50 sums to ~580 (8-bit).
-            # Quality scales inversely.
             s = sum(luma)
             if   s <= 80 : quality = 97
             elif s <= 150: quality = 95
@@ -163,12 +135,6 @@ def _get_jpeg_qtables(image_path: str) -> tuple[dict | None, int]:
 
 
 def _default_qtables(quality: int) -> dict:
-    """
-    Generate standard JPEG quantization tables for a given quality.
-    Used as fallback when the source has no embedded Q tables.
-    Quality must be in [1, 95].
-    """
-    # Standard JPEG luma table (zigzag order)
     base_luma = [
         16, 11, 12, 14, 12, 10, 16, 14,
         13, 14, 18, 17, 16, 19, 24, 40,
@@ -179,7 +145,6 @@ def _default_qtables(quality: int) -> dict:
         95, 98,103,104,103, 62, 77,113,
        121,112,100,120, 92,101,103, 99,
     ]
-    # Standard JPEG chroma table (zigzag order)
     base_chroma = [
         17, 18, 18, 24, 21, 24, 47, 26,
         26, 47, 99, 66, 56, 66, 99, 99,
@@ -204,7 +169,6 @@ def _default_qtables(quality: int) -> dict:
 # ---------------------------------------------------------------------------
 
 def _get_channel_blocks(channel: np.ndarray) -> tuple[np.ndarray, int, int]:
-    """Split channel into 8x8 blocks. Returns (blocks, pad_h, pad_w)."""
     h, w   = channel.shape
     pad_h  = (BLOCK_SIZE - h % BLOCK_SIZE) % BLOCK_SIZE
     pad_w  = (BLOCK_SIZE - w % BLOCK_SIZE) % BLOCK_SIZE
@@ -219,7 +183,6 @@ def _get_channel_blocks(channel: np.ndarray) -> tuple[np.ndarray, int, int]:
 def _reconstruct_channel(
     blocks: np.ndarray, orig_h: int, orig_w: int
 ) -> np.ndarray:
-    """Reconstruct channel from 8x8 blocks, strip padding."""
     bh, bw = blocks.shape[0], blocks.shape[1]
     ch = blocks.transpose(0, 2, 1, 3).reshape(bh * BLOCK_SIZE, bw * BLOCK_SIZE)
     return ch[:orig_h, :orig_w]
@@ -233,34 +196,20 @@ def _count_capacity(channel: np.ndarray) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Core embed / decode
+# Core embed
 # ---------------------------------------------------------------------------
 
 def embed_dct(image_path: str, message: str, output_path: str) -> dict:
     """
     Embed a UTF-8 message into a JPEG image using quantized DCT coefficients.
 
-    How it survives JPEG re-save:
-        Instead of modifying raw float DCT coefficients (which Pillow
-        overwrites during save), we:
-          1. Read the source's own quantization tables
-          2. DCT each 8x8 block
-          3. Quantize with the source Q table → integer coefficients
-          4. Modify the LSB of selected integer coefficients
-          5. Dequantize (multiply back by Q) → float coefficients
-          6. IDCT → pixel values
-          7. Save using qtables= with the EXACT same Q tables
-
-        When Pillow re-quantizes on save with the same tables, it recovers
-        the integer values we set — making the embedding stable.
-
-    Args:
-        image_path  : source JPEG (or lossy WebP)
-        message     : UTF-8 string to embed
-        output_path : destination path (saved as JPEG)
-
-    Returns:
-        dict: bits_used, capacity_bits, payload_pct, quality
+    Key design decisions:
+        - We work directly in YCbCr space and save the YCbCr array as JPEG.
+          This avoids a YCbCr → RGB → YCbCr round trip which loses precision
+          and corrupts embedded bits.
+        - Only coefficients with |quantized value| >= STABILITY_THRESHOLD
+          are used. Near-zero coefficients round unpredictably on recompression.
+        - Decoder skips the same positions — alignment is maintained exactly.
     """
     from core.format_handler import classify, ImageFormat, CompressionType
 
@@ -281,23 +230,19 @@ def embed_dct(image_path: str, message: str, output_path: str) -> dict:
             "Use the spatial LSB embedder instead."
         )
 
-    # Get quantization tables from source — these are our embedding key
     qtables, quality = _get_jpeg_qtables(image_path)
     if qtables is None:
         qtables = _default_qtables(85)
         quality = 85
-        print("[DCT EMBED] No Q tables found in source — using standard Q85 tables.")
+        print("[DCT EMBED] No Q tables found — using standard Q85 tables.")
 
     luma_qtable = qtables.get(0, list(_default_qtables(quality)[0]))
 
-    # Load image, convert to YCbCr, work on Y (luma) channel
-    pil_img     = Image.open(image_path).convert("RGB")
-    ycbcr       = pil_img.convert("YCbCr")
-    ycbcr_arr   = np.array(ycbcr, dtype=np.uint8)
+    # Load directly as YCbCr — no RGB conversion
+    ycbcr_arr   = np.array(Image.open(image_path).convert("YCbCr"), dtype=np.uint8)
     y_orig      = ycbcr_arr[:, :, 0].astype(np.float64)
     orig_h, orig_w = y_orig.shape
 
-    # Build payload: header + message bits + terminator
     format_code  = FORMAT_CODES.get(info.actual_format.value, FORMAT_CODES["JPEG"])
     header_bits  = _build_header(METHOD_DCT, format_code)
     msg_bits     = _text_to_bits(message)
@@ -311,7 +256,6 @@ def embed_dct(image_path: str, message: str, output_path: str) -> dict:
             f"capacity is {capacity_bits} bits."
         )
 
-    # Split Y channel into 8x8 blocks (centered at 0 for DCT)
     blocks, pad_h, pad_w = _get_channel_blocks(y_orig - 128.0)
     bh, bw = blocks.shape[0], blocks.shape[1]
 
@@ -332,52 +276,51 @@ def embed_dct(image_path: str, message: str, output_path: str) -> dict:
                     done = True
                     break
 
-                Q = _q_value(luma_qtable, row, col)
-
-                # Step 1: Quantize the float DCT coefficient to an integer
+                Q       = _q_value(luma_qtable, row, col)
                 q_coeff = int(round(dct_block[row, col] / Q))
 
-                # Step 2: Modify the LSB of the quantized integer
+                # Skip near-zero — rounds unpredictably on recompression
+                if abs(q_coeff) < STABILITY_THRESHOLD:
+                    continue
+
+                # Modify LSB of stable quantized integer
                 q_coeff = (q_coeff & ~1) | payload[bit_index]
 
-                # Step 3: Dequantize back to float domain
+                # Dequantize back to float domain
                 dct_block[row, col] = float(q_coeff * Q)
-
                 bit_index += 1
 
-            # IDCT the modified block back to pixel domain
             blocks[r, c] = _idct_2d(dct_block)
 
-    # Reconstruct Y channel, clip to valid range
+    if bit_index < total_bits:
+        raise ValueError(
+            f"Not enough stable coefficients to embed message. "
+            f"Needed {total_bits} bits, only found {bit_index} stable positions. "
+            f"Try a shorter message or a more textured image."
+        )
+
     y_modified = _reconstruct_channel(blocks + 128.0, orig_h, orig_w)
     y_modified  = np.clip(np.round(y_modified), 0, 255).astype(np.uint8)
 
-    # Rebuild YCbCr array with modified Y channel
     out_ycbcr = ycbcr_arr.copy()
     out_ycbcr[:, :, 0] = y_modified
 
-    # Convert back to RGB for saving
-    result_rgb = Image.fromarray(out_ycbcr, mode="YCbCr").convert("RGB")
-
-    # Enforce JPEG output
     out_path = Path(output_path)
     if out_path.suffix.lower() not in (".jpg", ".jpeg"):
         out_path = out_path.with_suffix(".jpg")
         print(f"[DCT EMBED] Output changed to {out_path} (DCT requires JPEG).")
 
-    # Save with the EXACT same Q tables from the source.
-    # This is the critical step — Pillow will re-quantize using these tables
-    # and recover the integer values we embedded.
-    result_rgb.save(
+    # Save YCbCr array directly — no RGB conversion, no precision loss
+    Image.fromarray(out_ycbcr, mode="YCbCr").save(
         str(out_path),
-        format   = "JPEG",
-        qtables  = qtables,
-        subsampling = 0,   # 4:4:4 — no chroma subsampling for fidelity
+        format      = "JPEG",
+        qtables     = qtables,
+        subsampling = 0,
     )
 
     payload_pct = (total_bits / capacity_bits) * 100
     print(f"[DCT EMBED] Embedded {total_bits} bits ({payload_pct:.2f}% capacity).")
-    print(f"[DCT EMBED] Q tables preserved from source. Est. quality: {quality}.")
+    print(f"[DCT EMBED] Q tables preserved. Est. quality: {quality}.")
 
     return {
         "bits_used"    : total_bits,
@@ -387,25 +330,17 @@ def embed_dct(image_path: str, message: str, output_path: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Core decode
+# ---------------------------------------------------------------------------
+
 def decode_dct(image_path: str) -> str:
     """
     Extract a hidden message from a DCT-embedded JPEG image.
 
-    Mirrors the embed process exactly:
-        1. Read Q tables from the stego image
-        2. DCT each 8x8 block of the Y channel
-        3. Quantize with the SAME Q tables
-        4. Read LSBs of the quantized integers at the same positions
-        5. Parse header, find terminator, decode UTF-8
-
-    Args:
-        image_path: path to the stego JPEG
-
-    Returns:
-        Decoded message string.
-
-    Raises:
-        ValueError: structured, human-readable error for every failure mode.
+    Mirrors embed_dct exactly:
+        - Load directly as YCbCr — no RGB conversion
+        - Same Q tables, same positions, same stability skip logic
     """
     from core.format_handler import classify, ImageFormat
 
@@ -418,49 +353,50 @@ def decode_dct(image_path: str) -> str:
             f"DCT decoder requires JPEG or WebP. Got: {info.actual_format.value}."
         )
 
-    # Read Q tables — must match the tables used during embedding
     qtables, _ = _get_jpeg_qtables(image_path)
     if qtables is None:
         raise ValueError(
             "Could not read quantization tables from this image. "
-            "The image may not be a standard JPEG, or it has been "
-            "processed in a way that removed the Q tables."
+            "The image may not be a standard JPEG, or the Q tables were removed."
         )
 
     luma_qtable = qtables.get(0, list(_default_qtables(85)[0]))
 
-    # Load Y channel
-    pil_img     = Image.open(image_path).convert("RGB")
-    ycbcr       = pil_img.convert("YCbCr")
-    y_arr       = np.array(ycbcr)[:, :, 0].astype(np.float64)
-    orig_h, orig_w = y_arr.shape
+    # Load directly as YCbCr — must match embed path exactly
+    y_arr = np.array(
+        Image.open(image_path).convert("YCbCr")
+    )[:, :, 0].astype(np.float64)
 
     blocks, _, _ = _get_channel_blocks(y_arr - 128.0)
     bh, bw = blocks.shape[0], blocks.shape[1]
 
-    # Extract bits by reading LSBs of quantized coefficients
     extracted_bits = []
     for r in range(bh):
         for c in range(bw):
             dct_block = _dct_2d(blocks[r, c])
             for (row, col) in MID_FREQ_POSITIONS:
-                Q         = _q_value(luma_qtable, row, col)
-                q_coeff   = int(round(dct_block[row, col] / Q))
+                Q       = _q_value(luma_qtable, row, col)
+                q_coeff = int(round(dct_block[row, col] / Q))
+
+                # Skip same positions as embed — alignment is critical
+                if abs(q_coeff) < STABILITY_THRESHOLD:
+                    continue
+
                 extracted_bits.append(q_coeff & 1)
 
     if len(extracted_bits) < 16:
         raise ValueError(
-            "Image too small to contain a valid DCT-embedded message."
+            "Not enough stable coefficients found. "
+            "This image may not contain a hidden message, "
+            "or was recompressed at a different quality after encoding."
         )
 
-    # Validate header
     try:
         method_id, format_code = _parse_header(extracted_bits[:16])
     except ValueError as e:
         raise ValueError(
             f"Header unreadable or corrupted. "
-            f"This image may not contain a hidden message, "
-            f"or was recompressed after encoding. Detail: {e}"
+            f"This image may not contain a hidden message. Detail: {e}"
         )
 
     if method_id != METHOD_DCT:
@@ -476,7 +412,6 @@ def decode_dct(image_path: str) -> str:
             f"The header may have been damaged by recompression."
         )
 
-    # Search for terminator at byte-aligned positions (skip 16-bit header)
     payload_bits = extracted_bits[16:]
     message_bits = None
 
@@ -490,7 +425,7 @@ def decode_dct(image_path: str) -> str:
         raise ValueError(
             f"Message terminator not found within image capacity. "
             f"Image was encoded as {encoded_format}. "
-            f"If recompressed at a different quality setting or format-converted "
+            f"If recompressed at a different quality or format-converted "
             f"after encoding, the message cannot be recovered."
         )
 
