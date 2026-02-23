@@ -10,3 +10,5 @@ build/
 data/models/
 web/frontend/node_modules/
 web/static/
+*.pth
+data/
