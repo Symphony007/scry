@@ -8,11 +8,9 @@ which method was selected and why.
 Available methods:
     lsb_replacement — maximum capacity, detectable by statistical analysis
     lsb_matching    — same capacity, eliminates histogram/chi-square fingerprint
-    metadata        — zero pixel change, detectable by file size (Phase 7)
-    dwt             — format-flexible, survives some compression (Phase 7)
-
-Current phase implements lsb_replacement and lsb_matching.
-metadata and dwt are stubs that raise NotImplementedError until built.
+    metadata        — zero pixel change, detectable by file size
+    dwt             — format-flexible, survives some compression
+    dct             — JPEG coefficient domain, survives same-quality recompression
 """
 
 from dataclasses import dataclass
@@ -27,9 +25,9 @@ from core.format_handler import classify, EmbeddingDomain
 class Priority:
     UNDETECTABILITY = "undetectability"   # LSB Matching
     CAPACITY        = "capacity"          # LSB Replacement
-    JPEG_SURVIVAL   = "jpeg_survival"     # DCT / F5 (Phase 7)
-    FORMAT_FLEXIBLE = "format_flexible"   # DWT (Phase 7)
-    PIXEL_PRESERVE  = "pixel_preserve"    # Metadata (Phase 7)
+    JPEG_SURVIVAL   = "jpeg_survival"     # DCT / F5
+    FORMAT_FLEXIBLE = "format_flexible"   # DWT
+    PIXEL_PRESERVE  = "pixel_preserve"    # Metadata
 
 
 ALL_PRIORITIES = [
@@ -56,6 +54,15 @@ class SelectionResult:
         reasoning       : plain-English explanation of why this method was chosen
         embed_result    : the dict returned by the embedder (after embedding)
         warnings        : list of non-fatal warnings
+
+    Note on embed_result shape:
+        Spatial embedders (lsb_replacement, lsb_matching, dwt) return:
+            {"psnr", "bits_used", "capacity"/"capacity_bits", "payload_pct", "method"}
+        Metadata embedder returns:
+            {"method", "bits_used", "pixel_delta", "format"}  — no "psnr" key
+        DCT embedder returns:
+            {"bits_used", "capacity_bits", "payload_pct", "quality"}
+        Always use .get() with a default when accessing optional keys.
     """
     method       : str
     priority     : str
@@ -99,8 +106,7 @@ def select_and_embed(
         SelectionResult with method, reasoning, and embed output.
 
     Raises:
-        ValueError  : if priority is invalid or format is unsupported
-        NotImplementedError: if selected method is not yet implemented
+        ValueError : if priority is invalid or format is unsupported
     """
     if priority not in ALL_PRIORITIES:
         raise ValueError(
@@ -129,30 +135,39 @@ def select_and_embed(
     # Method selection logic
     # ---------------------------------------------------------------------------
 
-    # JPEG / lossy WebP — only DCT path works
     if info.embedding_domain == EmbeddingDomain.DCT:
+        # JPEG / lossy WebP input
         if priority in (Priority.JPEG_SURVIVAL, Priority.FORMAT_FLEXIBLE):
             method    = "dct"
             reasoning = (
                 "DCT embedding selected — image is JPEG/lossy WebP. "
                 "Spatial LSB methods cannot survive JPEG compression."
             )
+
+        elif priority == Priority.PIXEL_PRESERVE:
+            # Metadata handles JPEG natively via EXIF — no conversion needed
+            method    = "metadata"
+            reasoning = (
+                "Metadata embedding selected — JPEG input handled natively "
+                "via EXIF UserComment. No format conversion required. "
+                "Zero pixel modification."
+            )
+
         else:
-            # For all other priorities on JPEG, convert to PNG and use
-            # the user's preferred spatial method
+            # UNDETECTABILITY or CAPACITY on a JPEG — convert to PNG first
             method    = _spatial_method_for_priority(priority)
             reasoning = (
                 f"JPEG input detected. Converting to PNG and using "
-                f"{method} — spatial LSB methods require lossless format."
+                f"{method} — spatial LSB methods require a lossless format."
             )
             warnings.append(
                 "JPEG converted to PNG. Output will be a PNG file."
             )
             image_path  = _convert_jpeg_to_png(image_path)
-            output_path = str(Path(output_path).with_suffix('.png'))
+            output_path = str(Path(output_path).with_suffix(".png"))
 
     else:
-        # Lossless spatial domain
+        # Lossless spatial domain (PNG, BMP, TIFF, lossless WebP)
         method    = _spatial_method_for_priority(priority)
         reasoning = _reasoning_for_method(method, priority)
 
@@ -200,7 +215,8 @@ def _reasoning_for_method(method: str, priority: str) -> str:
         ),
         "metadata": (
             "Metadata embedder selected — zero pixel modification. "
-            "File size increases detectably. Not suitable when file size is analysed."
+            "File size increases detectably. Not suitable when file size is analysed. "
+            "Note: stripped by most social media platforms."
         ),
         "dwt": (
             "DWT embedder selected — embeds in frequency sub-bands. "
@@ -232,8 +248,11 @@ def _invoke_embedder(
     message     : str,
     output_path : str,
 ) -> dict:
-    """Invoke the correct embedder for the selected method."""
+    """
+    Invoke the correct embedder for the selected method.
 
+    Return value shapes differ per method — see SelectionResult docstring.
+    """
     if method == "lsb_replacement":
         from core.embedder import embed
         return embed(image_path, message, output_path)
@@ -247,9 +266,8 @@ def _invoke_embedder(
         return embed_dct(image_path, message, output_path)
 
     elif method == "metadata":
-        raise NotImplementedError(
-            "Metadata embedder is not yet implemented — planned for Phase 7."
-        )
+        from core.metadata_embedder import embed_metadata
+        return embed_metadata(image_path, message, output_path)
 
     elif method == "dwt":
         from core.dwt_embedder import embed_dwt

@@ -279,6 +279,7 @@ async def embed(
     finally:
         if src_path: cleanup(src_path)
         if png_path: cleanup(png_path)
+        if dst_path: cleanup(dst_path)
 
 
 @app.post("/api/decode")

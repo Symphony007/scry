@@ -5,7 +5,7 @@ from PIL import Image
 # Formats supported for lossless spatial-domain embedding
 LOSSLESS_FORMATS = {".png", ".bmp", ".tiff", ".tif"}
 # Formats supported for DCT-domain embedding (Phase 3)
-LOSSY_FORMATS = {".webp"}
+LOSSY_FORMATS = {".webp", ".jpg", ".jpeg"}
 # All supported formats
 SUPPORTED_FORMATS = LOSSLESS_FORMATS | LOSSY_FORMATS
 
