@@ -1,4 +1,3 @@
-
 """
 DWT (Discrete Wavelet Transform) Embedder
 
@@ -7,34 +6,28 @@ directly in pixel values. This makes the embedding more robust to
 format changes and mild compression than spatial LSB methods.
 
 How it works:
-    1. Convert image to YCbCr, operate on Y (luma) channel only
-    2. Apply one level of 2D Haar DWT — splits image into four
-       sub-bands:
+    1. Load image as RGB, operate on R channel only
+    2. Apply one level of 2D Haar DWT — splits into four sub-bands:
            LL — low frequency (approximation) — not used, too visible
            LH — horizontal edges
            HL — vertical edges
            HH — diagonal edges (high frequency) — primary embedding band
     3. Modify LSBs of quantized HH coefficients to encode message bits
-    4. Apply inverse DWT to reconstruct the modified image
-    5. Recombine with original Cb/Cr channels and convert back to RGB
+    4. Apply inverse DWT to reconstruct the modified R channel
+    5. Recombine with original G/B channels and save as PNG
 
-Why HH sub-band:
-    The HH sub-band contains high-frequency diagonal detail — the
-    least perceptually significant part of the image. Changes here
-    are harder to see and harder to detect statistically than
-    changes in the spatial domain.
-
-Why more robust than spatial LSB:
-    Frequency domain changes spread across multiple pixels when
-    transformed back to spatial domain. A small compression or
-    resize operation affects spatial pixels directly but disturbs
-    frequency coefficients more predictably.
+Why step=16 and stability threshold=4:
+    Haar DWT coefficients involve sums/differences of pixel values.
+    After IDWT and uint8 clamping, reloading and re-applying DWT
+    produces coefficients with small rounding errors (~1-4 units).
+    step=16 ensures a rounding error of 4 units only shifts q by 0.25,
+    well below the 0.5 rounding threshold. Stability threshold=4
+    discards coefficients too close to zero where sign instability
+    could corrupt the bit stream.
 
 Known limitations:
     - Capacity is lower than spatial LSB (~25% of LSB capacity)
-      because only the HH sub-band is used
-    - Mild quality loss is accepted — PSNR typically 38-45 dB
-      vs 50-55 dB for spatial LSB
+    - PSNR typically 35-45 dB (mild quality loss accepted)
     - Does not survive heavy JPEG recompression (quality < 70)
     - Requires PyWavelets (pywt) library
 """
@@ -51,9 +44,15 @@ except ImportError:
 
 from core.utils import calculate_psnr
 
-TERMINATOR  = [0] * 16
-HAAR        = "haar"
+TERMINATOR          = [0] * 16
+HAAR                = "haar"
+STABILITY_THRESHOLD = 4
 
+# 8-bit magic signature prepended to all DWT payloads.
+# Allows decoder to verify this is a genuine DWT-embedded image
+# and not an accidental match from a non-DWT image.
+# Pattern: 10110101 = 0xB5
+DWT_MAGIC = [1, 0, 1, 1, 0, 1, 0, 1]
 
 # ---------------------------------------------------------------------------
 # Availability check
@@ -72,7 +71,7 @@ def _check_pywt():
 # ---------------------------------------------------------------------------
 
 def _text_to_bits(text: str) -> list[int]:
-    raw = text.encode("utf-8")
+    raw  = text.encode("utf-8")
     bits = []
     for byte in raw:
         for i in range(7, -1, -1):
@@ -82,9 +81,7 @@ def _text_to_bits(text: str) -> list[int]:
 
 def _bits_to_text(bits: list[int]) -> str:
     if len(bits) % 8 != 0:
-        raise ValueError(
-            f"Bit count {len(bits)} is not a multiple of 8."
-        )
+        raise ValueError(f"Bit count {len(bits)} is not a multiple of 8.")
     ba = bytearray()
     for i in range(0, len(bits), 8):
         byte = 0
@@ -99,36 +96,25 @@ def _bits_to_text(bits: list[int]) -> str:
 # ---------------------------------------------------------------------------
 
 def _dwt2(channel: np.ndarray) -> tuple:
-    """Apply one level of 2D Haar DWT. Returns (LL, (LH, HL, HH))."""
     return pywt.dwt2(channel.astype(np.float64), HAAR)
 
 
 def _idwt2(LL: np.ndarray, details: tuple) -> np.ndarray:
-    """Apply inverse 2D Haar DWT."""
     return pywt.idwt2((LL, details), HAAR)
 
 
-def _quantize(coeff: float, step: int = 4) -> int:
-    """Quantize a DWT coefficient to an integer for LSB manipulation."""
+def _quantize(coeff: float, step: int) -> int:
     return int(np.round(coeff / step))
 
 
-def _dequantize(q: int, step: int = 4) -> float:
-    """Dequantize back to float domain."""
+def _dequantize(q: int, step: int) -> float:
     return float(q * step)
 
 
-def _count_capacity(hh: np.ndarray, step: int = 4) -> int:
-    """
-    Count how many stable HH coefficients are available for embedding.
-    Coefficients with |quantized value| < 2 are skipped — they round
-    unpredictably and corrupt the bit stream.
-    """
+def _count_capacity(hh: np.ndarray, step: int) -> int:
     count = 0
-    flat  = hh.flatten()
-    for val in flat:
-        q = _quantize(val, step)
-        if abs(q) >= 2:
+    for val in hh.flatten():
+        if abs(_quantize(val, step)) >= STABILITY_THRESHOLD:
             count += 1
     return count
 
@@ -141,14 +127,30 @@ def embed_dwt(
     image_path  : str,
     message     : str,
     output_path : str,
-    step        : int = 4,
+    step        : int = 16,
 ) -> dict:
+    """
+    Embed a UTF-8 message using DWT coefficient modification.
+
+    Args:
+        image_path  : path to cover image (any format)
+        message     : UTF-8 message to hide
+        output_path : path to save stego image (always saved as PNG)
+        step        : quantization step — higher = more robust, lower capacity.
+                      Default 16 is calibrated for uint8 PNG round-trip safety.
+
+    Returns:
+        dict with psnr, bits_used, capacity_bits, payload_pct, method, step, output_path
+
+    Raises:
+        ValueError  : if message exceeds capacity
+        ImportError : if PyWavelets is not installed
+    """
     _check_pywt()
 
     img      = Image.open(image_path).convert("RGB")
     original = np.array(img, dtype=np.uint8)
 
-    # Work directly on R channel — no YCbCr conversion roundtrip
     R = original[:, :, 0].astype(np.float64)
     G = original[:, :, 1].copy()
     B = original[:, :, 2].copy()
@@ -158,14 +160,13 @@ def embed_dwt(
     capacity_bits = _count_capacity(HH, step)
 
     message_bits = _text_to_bits(message)
-    payload      = message_bits + TERMINATOR
+    payload = DWT_MAGIC + message_bits + TERMINATOR
     bits_needed  = len(payload)
 
     if bits_needed > capacity_bits:
         raise ValueError(
             f"Message too large for DWT embedding. "
-            f"Needs {bits_needed} bits, "
-            f"stable HH capacity is {capacity_bits} bits. "
+            f"Needs {bits_needed} bits, stable HH capacity is {capacity_bits} bits. "
             f"Try a shorter message, a larger image, or reduce step size."
         )
 
@@ -176,12 +177,12 @@ def embed_dwt(
         if bit_index >= bits_needed:
             break
         q = _quantize(hh_flat[i], step)
-        if abs(q) < 2:
+        if abs(q) < STABILITY_THRESHOLD:
             continue
-        sign  = 1 if q >= 0 else -1
-        abs_q = abs(q)
-        abs_q = (abs_q & ~1) | payload[bit_index]
-        q     = sign * abs_q
+        sign       = 1 if q >= 0 else -1
+        abs_q      = abs(q)
+        abs_q      = (abs_q & ~1) | payload[bit_index]
+        q          = sign * abs_q
         hh_flat[i] = _dequantize(q, step)
         bit_index += 1
 
@@ -194,12 +195,10 @@ def embed_dwt(
     HH_modified = hh_flat.reshape(HH.shape)
     R_modified  = _idwt2(LL, (LH, HL, HH_modified))
 
-    h, w = R.shape
+    h, w       = R.shape
     R_modified = np.clip(np.round(R_modified[:h, :w]), 0, 255).astype(np.uint8)
 
-    # Reconstruct RGB with modified R channel
-    stego = np.stack([R_modified, G, B], axis=2)
-
+    stego    = np.stack([R_modified, G, B], axis=2)
     out_path = Path(output_path).with_suffix(".png")
     Image.fromarray(stego).save(str(out_path), format="PNG")
 
@@ -219,34 +218,64 @@ def embed_dwt(
         "output_path"  : str(out_path),
     }
 
+
 # ---------------------------------------------------------------------------
 # Core decode
 # ---------------------------------------------------------------------------
 
-def decode_dwt(image_path: str, step: int = 4) -> str:
+def decode_dwt(image_path: str, step: int = 16) -> str:
+    """
+    Extract a hidden message from a DWT-embedded image.
+
+    Must use the same step size as was used during embedding.
+    Default step=16 matches the embed default.
+
+    Args:
+        image_path : path to the stego image (PNG output from embed_dwt)
+        step       : quantization step — must match embedding step
+
+    Returns:
+        Decoded message string.
+
+    Raises:
+        ValueError         : if terminator not found or message is corrupt
+        UnicodeDecodeError : if extracted bytes are not valid UTF-8
+    """
     _check_pywt()
 
     img = Image.open(image_path).convert("RGB")
     arr = np.array(img, dtype=np.uint8)
 
-    # Read same R channel — must match embed path exactly
     R = arr[:, :, 0].astype(np.float64)
 
     _, (_, _, HH) = _dwt2(R)
 
     extracted = []
-    hh_flat   = HH.flatten()
-
-    for val in hh_flat:
+    for val in HH.flatten():
         q = _quantize(val, step)
-        if abs(q) < 2:
+        if abs(q) < STABILITY_THRESHOLD:
             continue
         extracted.append(abs(q) & 1)
 
-    if len(extracted) < 16:
+    if len(extracted) < 8:
         raise ValueError(
             "Not enough stable coefficients to decode. "
             "This image may not contain a DWT-embedded message."
+        )
+
+    # Verify magic signature — rejects accidental matches from non-DWT images
+    if extracted[:8] != DWT_MAGIC:
+        raise ValueError(
+            "DWT magic signature not found. "
+            "This image was not embedded with the DWT method."
+        )
+
+    # Strip magic before searching for terminator
+    extracted = extracted[8:]
+
+    if len(extracted) < 16:
+        raise ValueError(
+            "Not enough data after magic signature."
         )
 
     message_bits = None
@@ -260,7 +289,7 @@ def decode_dwt(image_path: str, step: int = 4) -> str:
         raise ValueError(
             "Message terminator not found. "
             "This image may not contain a DWT-embedded message, "
-            "or the step size used during decoding does not match embedding."
+            "or the step size does not match embedding."
         )
 
     if len(message_bits) == 0:

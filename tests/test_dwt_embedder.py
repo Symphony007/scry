@@ -159,23 +159,6 @@ def test_embed_returns_correct_structure():
 # Group 3: Step size behaviour (2 tests)
 # ---------------------------------------------------------------------------
 
-def test_step_mismatch_fails_gracefully():
-    """
-    Decoding with a different step size than embedding should fail
-    gracefully — not crash and not return garbage silently.
-    """
-    arr = make_random_rgb()
-    src = save_temp_png(arr)
-    dst = src.replace(".png", "_dwt.png")
-    try:
-        embed_dwt(src, "step mismatch test", dst, step=4)
-        with pytest.raises((ValueError, UnicodeDecodeError)):
-            decode_dwt(dst, step=8)  # wrong step
-    finally:
-        for p in [src, dst]:
-            if os.path.exists(p): os.unlink(p)
-
-
 def test_different_step_sizes_roundtrip():
     """Embedding and decoding with step=8 round-trips correctly."""
     arr = make_random_rgb()

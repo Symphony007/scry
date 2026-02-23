@@ -1,10 +1,59 @@
 import { useState, useCallback } from 'react'
 import axios from 'axios'
 
+const METHODS = [
+  {
+    id   : 'lsb_matching',
+    label: 'LSB Matching',
+    desc : 'Modifies pixels randomly — eliminates statistical fingerprint. Recommended.',
+  },
+  {
+    id   : 'lsb_replacement',
+    label: 'LSB Replacement',
+    desc : 'Maximum capacity. Detectable by chi-square and histogram analysis.',
+  },
+  {
+    id   : 'metadata',
+    label: 'Metadata',
+    desc : 'Zero pixel change. Stored in file metadata. Stripped by most platforms.',
+  },
+  {
+    id   : 'dwt',
+    label: 'DWT',
+    desc    : 'Frequency domain embedding. Under calibration — coming soon.',
+    disabled: true,
+  },
+]
+
+const FORMAT_NOTES = {
+  lsb_matching: [
+    { key: 'PNG / BMP / TIFF', val: 'Spatial LSB Matching — lossless' },
+    { key: 'JPEG',             val: 'Converted to PNG before embedding' },
+    { key: 'WebP lossless',    val: 'Spatial LSB Matching — same as PNG' },
+  ],
+  lsb_replacement: [
+    { key: 'PNG / BMP / TIFF', val: 'Spatial LSB Replacement — lossless' },
+    { key: 'JPEG',             val: 'Converted to PNG before embedding' },
+    { key: 'WebP lossless',    val: 'Spatial LSB Replacement — same as PNG' },
+  ],
+  metadata: [
+    { key: 'PNG',       val: 'Stored in tEXt chunk' },
+    { key: 'JPEG',      val: 'Stored in EXIF UserComment field' },
+    { key: 'TIFF',      val: 'Stored in ImageDescription tag' },
+    { key: 'BMP',       val: 'Not supported — no metadata container' },
+  ],
+  dwt: [
+    { key: 'All formats', val: 'DWT on R channel — output always PNG' },
+    { key: 'Capacity',    val: '~25% of spatial LSB capacity' },
+    { key: 'PSNR',        val: 'Typically 38–45 dB (mild quality loss)' },
+  ],
+}
+
 export default function EmbedPanel() {
   const [file,    setFile]    = useState(null)
   const [preview, setPreview] = useState(null)
   const [message, setMessage] = useState('')
+  const [method,  setMethod]  = useState('lsb_matching')
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
   const [done,    setDone]    = useState(false)
@@ -32,13 +81,16 @@ export default function EmbedPanel() {
       const fd = new FormData()
       fd.append('file', file)
       fd.append('message', message)
+      fd.append('method', method)
 
       const res = await axios.post('/api/embed', fd, { responseType: 'blob' })
 
       const url  = URL.createObjectURL(res.data)
       const link = document.createElement('a')
       const inputExt = file.name.split('.').pop().toLowerCase()
-      const ext = ['jpg', 'jpeg', 'webp'].includes(inputExt) ? '.png' : '.' + inputExt
+      const ext  = (method === 'metadata' && !['jpg','jpeg'].includes(inputExt))
+        ? '.' + inputExt
+        : '.png'
       link.href     = url
       link.download = `scry_${file.name.replace(/\.[^.]+$/, '')}${ext}`
       link.click()
@@ -60,7 +112,9 @@ export default function EmbedPanel() {
     }
   }
 
-  const byteCount = new TextEncoder().encode(message).length
+  const byteCount    = new TextEncoder().encode(message).length
+  const activeMethod = METHODS.find(m => m.id === method)
+  const formatNotes  = FORMAT_NOTES[method]
 
   return (
     <div style={styles.grid}>
@@ -77,10 +131,7 @@ export default function EmbedPanel() {
           onDrop={handleDrop}
           onDragOver={e => e.preventDefault()}
           onClick={() => document.getElementById('embed-input').click()}
-          style={{
-            ...styles.dropzone,
-            ...(file ? styles.dropzoneActive : {})
-          }}
+          style={{ ...styles.dropzone, ...(file ? styles.dropzoneActive : {}) }}
         >
           {preview
             ? <img src={preview} alt="preview" style={styles.preview} />
@@ -119,6 +170,27 @@ export default function EmbedPanel() {
           <span>{byteCount} bytes</span>
         </div>
 
+        <div style={styles.sectionHeader}>
+          <div style={styles.sectionLabel}>03 — Method</div>
+          <div style={styles.sectionDesc}>{activeMethod.desc}</div>
+        </div>
+
+          <div style={styles.methodGrid}>
+            {METHODS.map(m => (
+              <button
+                key={m.id}
+                onClick={() => !m.disabled && setMethod(m.id)}
+                style={{
+                  ...styles.methodBtn,
+                  ...(method === m.id ? styles.methodBtnActive : {}),
+                  ...(m.disabled ? styles.methodBtnDisabled : {}),
+                }}
+              >
+                {m.label}{m.disabled ? ' *' : ''}
+              </button>
+            ))}
+          </div>
+
         <button
           onClick={handleSubmit}
           disabled={!file || !message.trim() || loading}
@@ -139,23 +211,19 @@ export default function EmbedPanel() {
 
         <div style={styles.sectionHeader}>
           <div style={styles.sectionLabel}>Format Behaviour</div>
+          <div style={styles.sectionDesc}>How the selected method handles each format.</div>
         </div>
 
         <div style={styles.infoBlock}>
-          <div style={styles.infoRow}>
-            <span style={styles.infoKey}>PNG / BMP / TIFF</span>
-            <span style={styles.infoVal}>Spatial LSB — lossless, full capacity</span>
-          </div>
-          <div style={styles.divider} />
-          <div style={styles.infoRow}>
-            <span style={styles.infoKey}>JPEG</span>
-            <span style={styles.infoVal}>Converted to PNG before embedding</span>
-          </div>
-          <div style={styles.divider} />
-          <div style={styles.infoRow}>
-            <span style={styles.infoKey}>WebP lossless</span>
-            <span style={styles.infoVal}>Spatial LSB — same as PNG</span>
-          </div>
+          {formatNotes.map((row, i) => (
+            <div key={i}>
+              {i > 0 && <div style={styles.divider} />}
+              <div style={styles.infoRow}>
+                <span style={styles.infoKey}>{row.key}</span>
+                <span style={styles.infoVal}>{row.val}</span>
+              </div>
+            </div>
+          ))}
         </div>
 
         <div style={styles.sectionHeader}>
@@ -169,7 +237,7 @@ export default function EmbedPanel() {
               <span>Waiting for image</span>
             </div>
           )}
-          {file && !done && (
+          {file && !loading && !done && (
             <div style={styles.statusRow}>
               <div style={{ ...styles.dot, background: '#4A4A4A' }} />
               <span>Ready — {file.name}</span>
@@ -194,6 +262,7 @@ export default function EmbedPanel() {
           <p style={styles.noteText}>
             Do not re-save or convert the output image after downloading.
             Any lossy compression applied after embedding will destroy the hidden message.
+            Metadata method is additionally stripped by most social media platforms.
           </p>
         </div>
 
@@ -205,10 +274,10 @@ export default function EmbedPanel() {
 
 const styles = {
   grid: {
-    display              : 'grid',
-    gridTemplateColumns  : '1fr 1fr',
-    gap                  : '64px',
-    alignItems           : 'start',
+    display             : 'grid',
+    gridTemplateColumns : '1fr 1fr',
+    gap                 : '64px',
+    alignItems          : 'start',
   },
   column: {
     display       : 'flex',
@@ -287,91 +356,120 @@ const styles = {
     color          : '#4A4A4A',
     marginTop      : '-8px',
   },
+  methodGrid: {
+    display             : 'grid',
+    gridTemplateColumns : '1fr 1fr',
+    gap                 : '8px',
+  },
+  methodBtn: {
+    padding       : '10px 0',
+    background    : '#161616',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '6px',
+    color         : '#4A4A4A',
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    letterSpacing : '0.08em',
+    textTransform : 'uppercase',
+    cursor        : 'pointer',
+    transition    : 'all 0.15s',
+  },
+  methodBtnActive: {
+    background    : '#1F1F1F',
+    border        : '1px solid #6B6B6B',
+    color         : '#E8E8E8',
+  },
+
+  methodBtnDisabled: {
+    opacity: 0.3,
+    cursor : 'not-allowed',
+  },
+  
   btn: {
-    padding        : '12px 0',
-    background     : '#E8E8E8',
-    color          : '#0D0D0D',
-    border         : 'none',
-    borderRadius   : '8px',
-    cursor         : 'pointer',
-    fontFamily     : "'JetBrains Mono', monospace",
-    fontSize       : '11px',
-    letterSpacing  : '0.1em',
-    textTransform  : 'uppercase',
-    fontWeight     : 500,
-    transition     : 'background 0.15s',
+    padding       : '12px 0',
+    background    : '#E8E8E8',
+    color         : '#0D0D0D',
+    border        : 'none',
+    borderRadius  : '8px',
+    cursor        : 'pointer',
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    letterSpacing : '0.1em',
+    textTransform : 'uppercase',
+    fontWeight    : 500,
+    transition    : 'background 0.15s',
   },
   btnDisabled: {
-    background     : '#1F1F1F',
-    color          : '#2A2A2A',
-    cursor         : 'not-allowed',
+    background    : '#1F1F1F',
+    color         : '#2A2A2A',
+    cursor        : 'not-allowed',
   },
   errorBox: {
-    padding        : '12px 14px',
-    background     : '#161616',
-    border         : '1px solid #3A1A1A',
-    borderRadius   : '8px',
-    color          : '#A05050',
-    fontFamily     : "'JetBrains Mono', monospace",
-    fontSize       : '11px',
-    lineHeight     : '1.6',
+    padding       : '12px 14px',
+    background    : '#161616',
+    border        : '1px solid #3A1A1A',
+    borderRadius  : '8px',
+    color         : '#A05050',
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    lineHeight    : '1.6',
   },
   infoBlock: {
-    border         : '1px solid #2A2A2A',
-    borderRadius   : '8px',
-    overflow       : 'hidden',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '8px',
+    overflow      : 'hidden',
   },
   infoRow: {
-    display        : 'flex',
-    flexDirection  : 'column',
-    gap            : '2px',
-    padding        : '12px 14px',
+    display       : 'flex',
+    flexDirection : 'column',
+    gap           : '2px',
+    padding       : '12px 14px',
   },
   infoKey: {
-    fontFamily     : "'JetBrains Mono', monospace",
-    fontSize       : '11px',
-    color          : '#E8E8E8',
-    letterSpacing  : '0.03em',
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    color         : '#E8E8E8',
+    letterSpacing : '0.03em',
   },
   infoVal: {
-    fontSize       : '12px',
-    color          : '#6B6B6B',
+    fontSize      : '12px',
+    color         : '#6B6B6B',
   },
   divider: {
-    borderTop      : '1px solid #2A2A2A',
+    borderTop     : '1px solid #2A2A2A',
   },
   statusBlock: {
-    padding        : '16px 14px',
-    background     : '#161616',
-    border         : '1px solid #2A2A2A',
-    borderRadius   : '8px',
+    padding       : '16px 14px',
+    background    : '#161616',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '8px',
   },
   statusRow: {
-    display        : 'flex',
-    alignItems     : 'center',
-    gap            : '10px',
-    fontFamily     : "'JetBrains Mono', monospace",
-    fontSize       : '11px',
-    color          : '#4A4A4A',
+    display       : 'flex',
+    alignItems    : 'center',
+    gap           : '10px',
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    color         : '#4A4A4A',
   },
   dot: {
-    width          : '6px',
-    height         : '6px',
-    borderRadius   : '50%',
-    flexShrink     : 0,
+    width         : '6px',
+    height        : '6px',
+    borderRadius  : '50%',
+    flexShrink    : 0,
   },
   noteBlock: {
-    padding        : '14px',
-    border         : '1px solid #2A2A2A',
-    borderRadius   : '8px',
-    display        : 'flex',
-    flexDirection  : 'column',
-    gap            : '8px',
+    padding       : '14px',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '8px',
+    display       : 'flex',
+    flexDirection : 'column',
+    gap           : '8px',
   },
   noteText: {
-    fontSize       : '12px',
-    color          : '#4A4A4A',
-    margin         : 0,
-    lineHeight     : '1.7',
+    fontSize      : '12px',
+    color         : '#4A4A4A',
+    margin        : 0,
+    lineHeight    : '1.7',
   },
 }

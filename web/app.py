@@ -14,7 +14,6 @@ In production, the React app is built and served by FastAPI directly.
 import os
 import uuid
 import tempfile
-import traceback
 from pathlib import Path
 from PIL import Image
 
@@ -41,7 +40,6 @@ app.add_middleware(
     allow_headers     = ["*"],
 )
 
-# Temp directory for uploaded files
 TEMP_DIR = Path(tempfile.gettempdir()) / "scry_uploads"
 TEMP_DIR.mkdir(exist_ok=True)
 
@@ -51,7 +49,6 @@ TEMP_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 
 def save_upload(upload: UploadFile) -> Path:
-    """Save an uploaded file to a temp path with its original extension."""
     suffix = Path(upload.filename).suffix.lower() or ".png"
     path   = TEMP_DIR / f"{uuid.uuid4().hex}{suffix}"
     with open(path, "wb") as f:
@@ -68,21 +65,8 @@ def cleanup(path: Path) -> None:
 
 
 def run_detection_pipeline(image_path: Path) -> dict:
-    """
-    Run the full Scry detection pipeline on an image file.
-
-    Pipeline:
-        1. Format classification
-        2. Image type classification
-        3. All four statistical detectors
-        4. Type-aware aggregation
-        5. Return structured result
-
-    Returns a dict safe for JSON serialization.
-    """
     import numpy as np
     from PIL import Image as PILImage
-
     from core.format_handler import classify as classify_format
     from ml.type_classifier  import ImageTypeClassifier
     from detectors.chi_square  import ChiSquareDetector
@@ -91,18 +75,12 @@ def run_detection_pipeline(image_path: Path) -> dict:
     from detectors.histogram   import HistogramDetector
     from detectors.aggregator  import build_type_aware_aggregator
 
-    # Step 1: Format info
-    fmt_info = classify_format(str(image_path))
-
-    # Step 2: Load image as numpy array
-    img = PILImage.open(str(image_path)).convert("RGB")
-    arr = np.array(img)
-
-    # Step 3: Image type classification
-    clf      = ImageTypeClassifier()
+    fmt_info    = classify_format(str(image_path))
+    img         = PILImage.open(str(image_path)).convert("RGB")
+    arr         = np.array(img)
+    clf         = ImageTypeClassifier()
     type_result = clf.classify(arr)
 
-    # Step 4: Run all four detectors
     detectors = [
         ChiSquareDetector(),
         EntropyDetector(),
@@ -111,11 +89,9 @@ def run_detection_pipeline(image_path: Path) -> dict:
     ]
     detector_results = [d.analyze(arr) for d in detectors]
 
-    # Step 5: Type-aware aggregation
     agg        = build_type_aware_aggregator(type_result)
     agg_result = agg.aggregate(detector_results)
 
-    # Step 6: Serialize everything to JSON-safe dict
     return {
         "format": {
             "actual_format"      : fmt_info.actual_format.value,
@@ -179,61 +155,113 @@ def health():
 
 @app.post("/api/detect")
 async def detect(file: UploadFile = File(...)):
-    """
-    Upload an image and run the full steganography detection pipeline.
-    Returns format info, image type classification, per-detector results,
-    and a final weighted verdict.
-    """
     path = None
     try:
         path   = save_upload(file)
         result = run_detection_pipeline(path)
         return JSONResponse(content=result)
     except Exception as e:
-        raise HTTPException(
-            status_code = 500,
-            detail      = f"Detection failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
     finally:
-        if path:
-            cleanup(path)
+        if path: cleanup(path)
+
 
 @app.post("/api/embed")
 async def embed(
     file    : UploadFile = File(...),
     message : str        = Form(...),
+    method  : str        = Form("lsb_matching"),
 ):
     src_path = None
     dst_path = None
+    png_path = None
+
+    VALID_METHODS = {"lsb_replacement", "lsb_matching", "metadata", "dwt"}
+
     try:
+        if method not in VALID_METHODS:
+            raise HTTPException(
+                status_code = 400,
+                detail      = f"Unknown method '{method}'. Valid: {sorted(VALID_METHODS)}"
+            )
+
         src_path = save_upload(file)
 
         from core.format_handler import classify, EmbeddingDomain
         info = classify(str(src_path))
-        print(f"[DEBUG] actual_format={info.actual_format.value} domain={info.embedding_domain.value} supported={info.is_supported}")
 
-        if info.embedding_domain == EmbeddingDomain.DCT:
-            # DCT embedding via jpegio not available on Windows/Python 3.14.
-            # Convert JPEG to PNG first, then spatial LSB embed.
-            from core.embedder import embed as spatial_embed
-            png_path  = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
-            Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
-            dst_path  = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
-            spatial_embed(str(png_path), message, str(dst_path))
-            png_path.unlink(missing_ok=True)
+        # ------------------------------------------------------------------
+        # Metadata — handle first, before any format conversion
+        # JPEG inputs are converted to PNG — PNG tEXt chunks are more
+        # reliable than JPEG EXIF for the embed/decode round-trip.
+        # ------------------------------------------------------------------
+        if method == "metadata":
+            from core.metadata_embedder import embed_metadata
+            suffix = Path(src_path).suffix.lower()
+
+            if suffix in ('.jpg', '.jpeg'):
+                png_path  = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
+                Image.open(str(src_path)).convert("RGB").save(
+                    str(png_path), format="PNG"
+                )
+                embed_src  = str(png_path)
+                out_suffix = ".png"
+            else:
+                embed_src  = str(src_path)
+                out_suffix = suffix
+
+            dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego{out_suffix}"
+            embed_metadata(embed_src, message, str(dst_path))
+            download_name = Path(file.filename).stem + f"_stego{out_suffix}"
+
+        # ------------------------------------------------------------------
+        # DWT — always outputs PNG regardless of input format
+        # ------------------------------------------------------------------
+        elif method == "dwt":
+            from core.dwt_embedder import embed_dwt
+
+            # JPEG files have near-zero HH sub-bands after lossy compression
+            # so DWT finds no stable coefficients to embed into.
+            # Convert to PNG first so the full frequency content is available.
+            suffix = Path(src_path).suffix.lower()
+            if suffix in ('.jpg', '.jpeg'):
+                png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
+                Image.open(str(src_path)).convert("RGB").save(
+                    str(png_path), format="PNG"
+                )
+                embed_src = str(png_path)
+            else:
+                embed_src = str(src_path)
+
+            dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+            result        = embed_dwt(embed_src, message, str(dst_path))
+            dst_path      = Path(result["output_path"])
             download_name = Path(file.filename).stem + "_stego.png"
 
-        elif info.embedding_domain == EmbeddingDomain.SPATIAL:
-            from core.embedder import embed as spatial_embed
-            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
-            spatial_embed(str(src_path), message, str(dst_path))
-            download_name = Path(file.filename).stem + "_stego.png"
-
+        # ------------------------------------------------------------------
+        # Spatial methods (lsb_matching, lsb_replacement)
+        # JPEG needs converting to PNG first
+        # ------------------------------------------------------------------
         else:
-            raise HTTPException(
-                status_code = 400,
-                detail      = f"Format '{info.actual_format.value}' is not supported for embedding."
-            )
+            if info.embedding_domain == EmbeddingDomain.DCT:
+                png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
+                Image.open(str(src_path)).convert("RGB").save(
+                    str(png_path), format="PNG"
+                )
+                embed_src = str(png_path)
+            else:
+                embed_src = str(src_path)
+
+            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+
+            if method == "lsb_matching":
+                from core.lsb_matching_embedder import embed_matching
+                embed_matching(embed_src, message, str(dst_path))
+            else:
+                from core.embedder import embed as lsb_replace
+                lsb_replace(embed_src, message, str(dst_path))
+
+            download_name = Path(file.filename).stem + "_stego.png"
 
         return FileResponse(
             path       = str(dst_path),
@@ -249,15 +277,12 @@ async def embed(
             detail      = f"Embedding failed: {str(e)}"
         )
     finally:
-        if src_path:
-            cleanup(src_path)
+        if src_path: cleanup(src_path)
+        if png_path: cleanup(png_path)
+
 
 @app.post("/api/decode")
 async def decode_endpoint(file: UploadFile = File(...)):
-    """
-    Attempt to decode a hidden message from an uploaded image.
-    Returns success status, decoded message, and diagnostic info.
-    """
     path = None
     try:
         path = save_upload(file)
@@ -280,8 +305,7 @@ async def decode_endpoint(file: UploadFile = File(...)):
             detail      = f"Decode failed: {str(e)}"
         )
     finally:
-        if path:
-            cleanup(path)
+        if path: cleanup(path)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +323,6 @@ if STATIC_DIR.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        """Catch-all route — serves React SPA for all non-API routes."""
         file_path = STATIC_DIR / full_path
         if file_path.exists() and file_path.is_file():
             return FileResponse(str(file_path))
