@@ -8,3 +8,5 @@ pytest
 fastapi
 uvicorn[standard]
 python-multipart
+piexif
+PyWavelets

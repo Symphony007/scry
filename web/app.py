@@ -68,7 +68,7 @@ def run_detection_pipeline(image_path: Path) -> dict:
     import numpy as np
     from PIL import Image as PILImage
     from core.format_handler import classify as classify_format
-    from ml.type_classifier  import ImageTypeClassifier
+    from ml.classifier import get_classifier
     from detectors.chi_square  import ChiSquareDetector
     from detectors.entropy     import EntropyDetector
     from detectors.rs_analysis import RSAnalysisDetector
@@ -78,7 +78,7 @@ def run_detection_pipeline(image_path: Path) -> dict:
     fmt_info    = classify_format(str(image_path))
     img         = PILImage.open(str(image_path)).convert("RGB")
     arr         = np.array(img)
-    clf         = ImageTypeClassifier()
+    clf         = get_classifier()
     type_result = clf.classify(arr)
 
     detectors = [
@@ -235,7 +235,7 @@ async def embed(
 
             dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
             result        = embed_dwt(embed_src, message, str(dst_path))
-            dst_path      = Path(result["output_path"])
+            actual_output = Path(result["output_path"])
             download_name = Path(file.filename).stem + "_stego.png"
 
         # ------------------------------------------------------------------
@@ -264,7 +264,7 @@ async def embed(
             download_name = Path(file.filename).stem + "_stego.png"
 
         return FileResponse(
-            path       = str(dst_path),
+            path       = str(actual_output),
             media_type = "application/octet-stream",
             filename   = download_name,
         )

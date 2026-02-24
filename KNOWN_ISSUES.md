@@ -29,3 +29,11 @@ not engineered around.
 LSB replacement in the spatial domain is destroyed by JPEG DCT compression.
 Detection on JPEG files produces false positives from compression artifacts.
 Both embedding and detection require a separate DCT-domain code path for JPEG.
+
+## Classifier Method Field Values
+The new HierarchicalClassifier (ml/classifier.py) returns method values:
+"ml_general", "ml_ensemble", "ml_general_low_conf", "rules"
+The old ImageTypeClassifier (ml/type_classifier.py) returned:
+"ml", "rules", "ml+rules"
+Do not write logic that checks result.method == "ml" — use
+result.method.startswith("ml") or check clf.is_loaded instead.
