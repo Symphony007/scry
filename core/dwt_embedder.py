@@ -54,6 +54,7 @@ STABILITY_THRESHOLD = 4
 # Pattern: 10110101 = 0xB5
 DWT_MAGIC = [1, 0, 1, 1, 0, 1, 0, 1]
 
+
 # ---------------------------------------------------------------------------
 # Availability check
 # ---------------------------------------------------------------------------
@@ -119,6 +120,27 @@ def _count_capacity(hh: np.ndarray, step: int) -> int:
     return count
 
 
+def get_dwt_capacity(arr: np.ndarray, step: int = 16) -> int:
+    """
+    Return the number of embeddable bits for a given image array.
+    Used externally to size messages before calling embed_dwt.
+    Subtracts magic header (8 bits) and terminator (16 bits) overhead.
+
+    Args:
+        arr  : image as numpy array (H, W, 3) uint8
+        step : quantization step — must match the step used in embed_dwt
+
+    Returns:
+        Number of usable payload bits (0 if image is too small).
+    """
+    _check_pywt()
+    R = arr[:, :, 0].astype(np.float64)
+    _, (_, _, HH) = _dwt2(R)
+    total_bits = _count_capacity(HH, step)
+    # Subtract magic (8) + terminator (16) overhead
+    return max(0, total_bits - 24)
+
+
 # ---------------------------------------------------------------------------
 # Core embed
 # ---------------------------------------------------------------------------
@@ -160,7 +182,7 @@ def embed_dwt(
     capacity_bits = _count_capacity(HH, step)
 
     message_bits = _text_to_bits(message)
-    payload = DWT_MAGIC + message_bits + TERMINATOR
+    payload      = DWT_MAGIC + message_bits + TERMINATOR
     bits_needed  = len(payload)
 
     if bits_needed > capacity_bits:
