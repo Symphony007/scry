@@ -9,7 +9,6 @@ from pathlib import Path
 class ImageFormat(Enum):
     PNG      = "PNG"
     JPEG     = "JPEG"
-    BMP      = "BMP"
     TIFF     = "TIFF"
     WEBP     = "WEBP"
     UNKNOWN  = "UNKNOWN"
@@ -22,8 +21,8 @@ class CompressionType(Enum):
 
 
 class EmbeddingDomain(Enum):
-    SPATIAL   = "SPATIAL"    # LSB replacement works here
-    DCT       = "DCT"        # Frequency domain — JPEG, lossy WebP
+    SPATIAL     = "SPATIAL"    # LSB replacement works here
+    DCT         = "DCT"        # Frequency domain — JPEG, lossy WebP
     UNSUPPORTED = "UNSUPPORTED"
 
 
@@ -66,9 +65,8 @@ class FormatInfo:
 # These are read from the actual file — never trust the extension alone
 # ---------------------------------------------------------------------------
 
-MAGIC_PNG  = b'\x89PNG\r\n\x1a\n'
-MAGIC_JPEG = b'\xff\xd8\xff'
-MAGIC_BMP  = b'BM'
+MAGIC_PNG       = b'\x89PNG\r\n\x1a\n'
+MAGIC_JPEG      = b'\xff\xd8\xff'
 MAGIC_WEBP_RIFF = b'RIFF'
 MAGIC_WEBP_WEBP = b'WEBP'  # at offset 8
 
@@ -80,7 +78,6 @@ MAGIC_TIFF_BE = b'MM\x00\x2a'  # big-endian
 FORMAT_EXTENSIONS = {
     ImageFormat.PNG  : {".png"},
     ImageFormat.JPEG : {".jpg", ".jpeg"},
-    ImageFormat.BMP  : {".bmp"},
     ImageFormat.TIFF : {".tiff", ".tif"},
     ImageFormat.WEBP : {".webp"},
 }
@@ -96,6 +93,7 @@ def _detect_format(magic: bytes) -> ImageFormat:
     """
     Identify image format from magic bytes.
     Order matters — check more specific signatures first.
+    BMP is intentionally not detected — it is no longer a supported format.
     """
     if magic[:8] == MAGIC_PNG:
         return ImageFormat.PNG
@@ -105,8 +103,6 @@ def _detect_format(magic: bytes) -> ImageFormat:
         return ImageFormat.WEBP
     if magic[:4] in (MAGIC_TIFF_LE, MAGIC_TIFF_BE):
         return ImageFormat.TIFF
-    if magic[:2] == MAGIC_BMP:
-        return ImageFormat.BMP
     return ImageFormat.UNKNOWN
 
 
@@ -169,19 +165,11 @@ def _read_image_dimensions(path: str, fmt: ImageFormat) -> tuple[int, int]:
             return w, h
 
         if fmt == ImageFormat.JPEG:
-            # JPEG dimensions require scanning for SOF marker — use Pillow
             from PIL import Image
             with Image.open(path) as img:
                 return img.size  # (width, height)
 
-        if fmt == ImageFormat.BMP:
-            # BMP: width at bytes 18-21, height at 22-25 (little-endian)
-            w = struct.unpack("<I", data[18:22])[0]
-            h = struct.unpack("<I", data[22:26])[0]
-            return w, h
-
         if fmt == ImageFormat.WEBP:
-            # WebP: use Pillow for reliability
             from PIL import Image
             with Image.open(path) as img:
                 return img.size
@@ -222,13 +210,12 @@ def _read_bit_depth_and_color(path: str, fmt: ImageFormat) -> tuple[int, str, bo
             }
             color_space = mode_to_color.get(mode, mode)
 
-            # Bit depth per channel
             if mode in ("I",):
                 bit_depth = 32
             elif mode in ("F",):
                 bit_depth = 32
             else:
-                bit_depth = 8  # standard for all common formats
+                bit_depth = 8
 
             return bit_depth, color_space, has_alpha
 
@@ -240,6 +227,9 @@ def classify(path: str) -> FormatInfo:
     """
     Classify an image file completely from its actual bytes.
     This is the single entry point called before any embedding or detection.
+
+    Supported formats: PNG, JPEG, WebP, TIFF.
+    Any other format (including BMP) returns is_supported=False.
 
     Args:
         path: path to the image file
@@ -259,7 +249,7 @@ def classify(path: str) -> FormatInfo:
     suffix = p.suffix.lower()
 
     # Check for extension mismatch
-    expected_exts = FORMAT_EXTENSIONS.get(fmt, set())
+    expected_exts      = FORMAT_EXTENSIONS.get(fmt, set())
     extension_mismatch = bool(expected_exts) and suffix not in expected_exts
 
     # Determine compression type
@@ -267,7 +257,7 @@ def classify(path: str) -> FormatInfo:
         compression = CompressionType.LOSSY
     elif fmt == ImageFormat.WEBP:
         compression = CompressionType.LOSSY if _is_webp_lossy(path) else CompressionType.LOSSLESS
-    elif fmt in (ImageFormat.PNG, ImageFormat.BMP, ImageFormat.TIFF):
+    elif fmt in (ImageFormat.PNG, ImageFormat.TIFF):
         compression = CompressionType.LOSSLESS
     else:
         compression = CompressionType.UNKNOWN
@@ -277,16 +267,19 @@ def classify(path: str) -> FormatInfo:
         domain = EmbeddingDomain.DCT
     elif fmt == ImageFormat.WEBP and compression == CompressionType.LOSSY:
         domain = EmbeddingDomain.DCT
-    elif fmt in (ImageFormat.PNG, ImageFormat.BMP, ImageFormat.TIFF):
+    elif fmt in (ImageFormat.PNG, ImageFormat.TIFF):
         domain = EmbeddingDomain.SPATIAL
     elif fmt == ImageFormat.WEBP and compression == CompressionType.LOSSLESS:
         domain = EmbeddingDomain.SPATIAL
     else:
         domain = EmbeddingDomain.UNSUPPORTED
 
+    # Only PNG, JPEG, WebP, TIFF are supported
     is_supported = fmt in (
-        ImageFormat.PNG, ImageFormat.BMP, ImageFormat.TIFF,
-        ImageFormat.JPEG, ImageFormat.WEBP
+        ImageFormat.PNG,
+        ImageFormat.JPEG,
+        ImageFormat.TIFF,
+        ImageFormat.WEBP,
     )
 
     width, height   = _read_image_dimensions(path, fmt)
@@ -309,7 +302,7 @@ def classify(path: str) -> FormatInfo:
             f"WARNING: Extension '{suffix}' does not match detected format '{fmt.value}'."
         )
     if not is_supported:
-        notes_parts.append("Format not supported for embedding or detection.")
+        notes_parts.append("Format not supported. Use PNG, JPEG, WebP, or TIFF.")
 
     return FormatInfo(
         actual_format      = fmt,

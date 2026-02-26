@@ -20,33 +20,47 @@ const METHODS = [
   {
     id   : 'dwt',
     label: 'DWT',
-    desc    : 'Frequency domain embedding. Under calibration — coming soon.',
-    disabled: true,
+    desc : 'Frequency domain embedding. Lower capacity than LSB — output always PNG.',
   },
 ]
 
 const FORMAT_NOTES = {
   lsb_matching: [
-    { key: 'PNG / BMP / TIFF', val: 'Spatial LSB Matching — lossless' },
-    { key: 'JPEG',             val: 'Converted to PNG before embedding' },
-    { key: 'WebP lossless',    val: 'Spatial LSB Matching — same as PNG' },
+    { key: 'PNG / TIFF',    val: 'Spatial LSB Matching — lossless, no conversion' },
+    { key: 'JPEG',          val: 'Converted to PNG before embedding — output is PNG' },
+    { key: 'WebP lossless', val: 'Spatial LSB Matching — same as PNG' },
+    { key: 'WebP lossy',    val: 'Converted to PNG before embedding — output is PNG' },
   ],
   lsb_replacement: [
-    { key: 'PNG / BMP / TIFF', val: 'Spatial LSB Replacement — lossless' },
-    { key: 'JPEG',             val: 'Converted to PNG before embedding' },
-    { key: 'WebP lossless',    val: 'Spatial LSB Replacement — same as PNG' },
+    { key: 'PNG / TIFF',    val: 'Spatial LSB Replacement — lossless, no conversion' },
+    { key: 'JPEG',          val: 'Converted to PNG before embedding — output is PNG' },
+    { key: 'WebP lossless', val: 'Spatial LSB Replacement — same as PNG' },
+    { key: 'WebP lossy',    val: 'Converted to PNG before embedding — output is PNG' },
   ],
   metadata: [
-    { key: 'PNG',       val: 'Stored in tEXt chunk' },
-    { key: 'JPEG',      val: 'Stored in EXIF UserComment field' },
-    { key: 'TIFF',      val: 'Stored in ImageDescription tag' },
-    { key: 'BMP',       val: 'Not supported — no metadata container' },
+    { key: 'PNG',           val: 'Stored in tEXt chunk — zero pixel change' },
+    { key: 'JPEG',          val: 'Converted to PNG, stored in tEXt chunk' },
+    { key: 'TIFF',          val: 'Stored in ImageDescription tag — zero pixel change' },
+    { key: 'WebP',          val: 'Converted to PNG, stored in tEXt chunk' },
   ],
   dwt: [
-    { key: 'All formats', val: 'DWT on R channel — output always PNG' },
-    { key: 'Capacity',    val: '~25% of spatial LSB capacity' },
-    { key: 'PSNR',        val: 'Typically 38–45 dB (mild quality loss)' },
+    { key: 'All formats',   val: 'DWT on R channel — output always PNG' },
+    { key: 'JPEG',          val: 'Converted to PNG first — JPEG HH sub-bands are near-zero' },
+    { key: 'Capacity',      val: '~25% of spatial LSB capacity' },
+    { key: 'PSNR',          val: 'Typically 38–45 dB (mild quality loss)' },
   ],
+}
+
+const JPEG_SUFFIXES = ['jpg', 'jpeg']
+
+function getFileExtension(filename) {
+  return filename.split('.').pop().toLowerCase()
+}
+
+function shouldWarnConversion(method, filename) {
+  if (!filename) return false
+  if (method === 'metadata') return false
+  return JPEG_SUFFIXES.includes(getFileExtension(filename))
 }
 
 export default function EmbedPanel() {
@@ -87,12 +101,8 @@ export default function EmbedPanel() {
 
       const url  = URL.createObjectURL(res.data)
       const link = document.createElement('a')
-      const inputExt = file.name.split('.').pop().toLowerCase()
-      const ext  = (method === 'metadata' && !['jpg','jpeg'].includes(inputExt))
-        ? '.' + inputExt
-        : '.png'
       link.href     = url
-      link.download = `scry_${file.name.replace(/\.[^.]+$/, '')}${ext}`
+      link.download = `scry_${file.name.replace(/\.[^.]+$/, '')}.png`
       link.click()
       URL.revokeObjectURL(url)
       setDone(true)
@@ -115,6 +125,7 @@ export default function EmbedPanel() {
   const byteCount    = new TextEncoder().encode(message).length
   const activeMethod = METHODS.find(m => m.id === method)
   const formatNotes  = FORMAT_NOTES[method]
+  const showJpegWarn = shouldWarnConversion(method, file?.name)
 
   return (
     <div style={styles.grid}>
@@ -124,7 +135,7 @@ export default function EmbedPanel() {
 
         <div style={styles.sectionHeader}>
           <div style={styles.sectionLabel}>01 — Cover Image</div>
-          <div style={styles.sectionDesc}>The image that will carry your hidden message.</div>
+          <div style={styles.sectionDesc}>PNG, JPEG, WebP, or TIFF. The image that will carry your hidden message.</div>
         </div>
 
         <div
@@ -140,7 +151,7 @@ export default function EmbedPanel() {
           <input
             id="embed-input"
             type="file"
-            accept="image/*"
+            accept=".png,.jpg,.jpeg,.webp,.tiff,.tif,image/png,image/jpeg,image/webp,image/tiff"
             style={{ display: 'none' }}
             onChange={e => handleFile(e.target.files[0])}
           />
@@ -149,6 +160,13 @@ export default function EmbedPanel() {
         {file && (
           <div style={styles.fileMeta}>
             {file.name} &nbsp;·&nbsp; {(file.size / 1024).toFixed(1)} KB
+          </div>
+        )}
+
+        {showJpegWarn && (
+          <div style={styles.conversionNote}>
+            <span style={styles.conversionDot} />
+            JPEG detected — will be converted to PNG before embedding. Output file will be PNG.
           </div>
         )}
 
@@ -175,21 +193,20 @@ export default function EmbedPanel() {
           <div style={styles.sectionDesc}>{activeMethod.desc}</div>
         </div>
 
-          <div style={styles.methodGrid}>
-            {METHODS.map(m => (
-              <button
-                key={m.id}
-                onClick={() => !m.disabled && setMethod(m.id)}
-                style={{
-                  ...styles.methodBtn,
-                  ...(method === m.id ? styles.methodBtnActive : {}),
-                  ...(m.disabled ? styles.methodBtnDisabled : {}),
-                }}
-              >
-                {m.label}{m.disabled ? ' *' : ''}
-              </button>
-            ))}
-          </div>
+        <div style={styles.methodGrid}>
+          {METHODS.map(m => (
+            <button
+              key={m.id}
+              onClick={() => setMethod(m.id)}
+              style={{
+                ...styles.methodBtn,
+                ...(method === m.id ? styles.methodBtnActive : {}),
+              }}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
 
         <button
           onClick={handleSubmit}
@@ -333,6 +350,27 @@ const styles = {
     color         : '#4A4A4A',
     marginTop     : '-8px',
   },
+  conversionNote: {
+    display       : 'flex',
+    alignItems    : 'center',
+    gap           : '8px',
+    padding       : '10px 12px',
+    background    : '#161616',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '6px',
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    color         : '#6B6B6B',
+    lineHeight    : '1.5',
+    marginTop     : '-8px',
+  },
+  conversionDot: {
+    width         : '5px',
+    height        : '5px',
+    borderRadius  : '50%',
+    background    : '#4A4A4A',
+    flexShrink    : 0,
+  },
   textarea: {
     width         : '100%',
     background    : '#161616',
@@ -379,12 +417,6 @@ const styles = {
     border        : '1px solid #6B6B6B',
     color         : '#E8E8E8',
   },
-
-  methodBtnDisabled: {
-    opacity: 0.3,
-    cursor : 'not-allowed',
-  },
-  
   btn: {
     padding       : '12px 0',
     background    : '#E8E8E8',

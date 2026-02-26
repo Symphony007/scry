@@ -16,8 +16,8 @@ Capacity is identical to LSB replacement — 1 bit per channel.
 PSNR is essentially identical — pixel changes are still at most 1.
 The only cost is that embedding is slightly slower due to RNG calls.
 
-Supported formats: PNG, BMP, TIFF (lossless spatial domain only).
-JPEG is rejected — same rule as LSB replacement.
+Supported formats: PNG, TIFF (lossless spatial domain only).
+JPEG and WebP are rejected — convert to PNG first.
 """
 
 import numpy as np
@@ -31,6 +31,8 @@ from core.utils import (
 )
 
 TERMINATOR = [0] * 16
+
+ALLOWED_SUFFIXES = {'.png', '.tiff', '.tif'}
 
 
 def embed_matching(
@@ -51,7 +53,7 @@ def embed_matching(
           always succeeds without corrupting the bit stream.
 
     Args:
-        image_path  : path to cover image (PNG, BMP, TIFF only)
+        image_path  : path to cover image (PNG or TIFF only)
         message     : UTF-8 message to hide
         output_path : path to save stego image
         seed        : optional RNG seed for reproducibility in tests
@@ -60,14 +62,14 @@ def embed_matching(
         dict with psnr, bits_used, capacity, payload_pct, method
 
     Raises:
-        ValueError: if format is lossy or message is too large
+        ValueError: if format is not supported or message is too large
     """
     suffix = Path(image_path).suffix.lower()
-    lossy  = {'.jpg', '.jpeg', '.webp'}
-    if suffix in lossy:
+    if suffix not in ALLOWED_SUFFIXES:
         raise ValueError(
             f"LSB Matching requires a lossless format. "
-            f"Got '{suffix}'. Use PNG, BMP, or TIFF."
+            f"Got '{suffix}'. Supported: PNG, TIFF. "
+            f"Convert JPEG or WebP to PNG before embedding."
         )
 
     original, _ = load_image(image_path)

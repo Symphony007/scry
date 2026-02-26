@@ -3,8 +3,8 @@ import numpy as np
 from PIL import Image
 
 # Formats supported for lossless spatial-domain embedding
-LOSSLESS_FORMATS = {".png", ".bmp", ".tiff", ".tif"}
-# Formats supported for DCT-domain embedding (Phase 3)
+LOSSLESS_FORMATS = {".png", ".tiff", ".tif"}
+# Formats supported for DCT-domain embedding
 LOSSY_FORMATS = {".webp", ".jpg", ".jpeg"}
 # All supported formats
 SUPPORTED_FORMATS = LOSSLESS_FORMATS | LOSSY_FORMATS
@@ -113,11 +113,11 @@ def calculate_capacity(array: np.ndarray) -> dict:
     usable_bytes = total_bytes - 2  # reserve 2 bytes for 16-bit terminator
 
     return {
-        "total_bits": total_bits,
-        "total_bytes": total_bytes,
+        "total_bits"  : total_bits,
+        "total_bytes" : total_bytes,
         "usable_bytes": usable_bytes,
-        "ascii_chars": usable_bytes,
-        "note": "Unicode characters may require 2–4 bytes each.",
+        "ascii_chars" : usable_bytes,
+        "note"        : "Unicode characters may require 2–4 bytes each.",
     }
 
 

@@ -10,8 +10,8 @@ they operate on pixel data only.
 Method depends on format:
     PNG  — stores message in a tEXt ancillary chunk under a fixed key
     JPEG — stores message in the EXIF UserComment field
-    BMP  — not supported (BMP has no metadata container)
     TIFF — stores message in ImageDescription tag
+    WebP — converted to PNG, stored in tEXt chunk
 
 Tradeoffs vs pixel-based methods:
     + Zero pixel change — statistically undetectable
@@ -34,11 +34,10 @@ import json
 
 
 # Fixed metadata key used to identify Scry-embedded messages
-SCRY_PNG_KEY   = "scry_payload"
-SCRY_TIFF_TAG  = 270   # ImageDescription tag ID
-SCRY_EXIF_KEY  = "UserComment"
+SCRY_PNG_KEY  = "scry_payload"
+SCRY_TIFF_TAG = 270   # ImageDescription tag ID
 
-SUPPORTED_FORMATS = {".png", ".jpg", ".jpeg", ".tiff", ".tif"}
+SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp"}
 
 
 def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
@@ -46,7 +45,7 @@ def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
     Embed a UTF-8 message into image metadata without modifying pixels.
 
     Args:
-        image_path  : path to cover image (PNG, JPEG, TIFF)
+        image_path  : path to cover image (PNG, JPEG, TIFF, or WebP)
         message     : UTF-8 message to hide
         output_path : path to save the output image
 
@@ -58,16 +57,10 @@ def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
     """
     suffix = Path(image_path).suffix.lower()
 
-    if suffix not in SUPPORTED_FORMATS:
+    if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError(
             f"Metadata embedding not supported for '{suffix}'. "
-            f"Supported: {sorted(SUPPORTED_FORMATS)}"
-        )
-
-    if suffix == ".bmp":
-        raise ValueError(
-            "BMP has no metadata container. "
-            "Use PNG, JPEG, or TIFF for metadata embedding."
+            f"Supported: PNG, JPEG, TIFF, WebP."
         )
 
     img = Image.open(image_path).convert("RGB")
@@ -83,6 +76,13 @@ def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
     elif suffix in (".tiff", ".tif"):
         _embed_tiff(img, message, output_path)
         fmt = "TIFF"
+
+    elif suffix == ".webp":
+        # Convert to PNG and store in tEXt chunk
+        png_output = str(Path(output_path).with_suffix(".png"))
+        _embed_png(img, message, png_output)
+        output_path = png_output
+        fmt = "PNG"
 
     bits_used = len(message.encode("utf-8")) * 8
 
@@ -113,7 +113,7 @@ def decode_metadata(image_path: str) -> str:
     """
     suffix = Path(image_path).suffix.lower()
 
-    if suffix not in SUPPORTED_FORMATS:
+    if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError(
             f"Metadata decoding not supported for '{suffix}'."
         )
@@ -126,6 +126,14 @@ def decode_metadata(image_path: str) -> str:
 
     elif suffix in (".tiff", ".tif"):
         return _decode_tiff(image_path)
+
+    elif suffix == ".webp":
+        # WebP metadata embeds are stored as PNG — shouldn't reach here
+        # in normal flow, but handle gracefully
+        raise ValueError(
+            "WebP metadata payloads are stored in a converted PNG file. "
+            "Please upload the PNG output from the embed step."
+        )
 
     raise ValueError(f"No metadata decoder available for '{suffix}'.")
 
@@ -160,10 +168,10 @@ def _decode_png(image_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _embed_jpeg(
-    img: Image.Image,
-    message: str,
-    source_path: str,
-    output_path: str,
+    img         : Image.Image,
+    message     : str,
+    source_path : str,
+    output_path : str,
 ) -> None:
     """Store message in JPEG EXIF UserComment field."""
     try:

@@ -28,16 +28,46 @@ export default function App() {
         >
           Decode
         </button>
+        <button
+          style={{ ...styles.tab, ...(activeTab === 'detect' ? styles.tabActive : {}), ...styles.tabDisabled }}
+          onClick={() => setActiveTab('detect')}
+        >
+          Detect
+          <span style={styles.comingSoonBadge}>soon</span>
+        </button>
       </div>
 
       <main style={styles.main}>
-        {activeTab === 'embed' ? <EmbedPanel /> : <DecodePanel />}
+        {activeTab === 'embed'  && <EmbedPanel />}
+        {activeTab === 'decode' && <DecodePanel />}
+        {activeTab === 'detect' && <DetectComingSoon />}
       </main>
 
       <footer style={styles.footer}>
         Scry — every verdict is traceable.
       </footer>
 
+    </div>
+  )
+}
+
+function DetectComingSoon() {
+  return (
+    <div style={styles.comingSoonWrapper}>
+      <div style={styles.comingSoonBox}>
+        <div style={styles.comingSoonLabel}>Detection</div>
+        <p style={styles.comingSoonText}>
+          Statistical and ML-based stego detection is under active development.
+          The engine is built — we're calibrating it before exposing it here.
+        </p>
+        <div style={styles.comingSoonMethods}>
+          <div style={styles.comingSoonMethod}>Chi-Square Analysis</div>
+          <div style={styles.comingSoonMethod}>RS Analysis</div>
+          <div style={styles.comingSoonMethod}>Entropy Heatmap</div>
+          <div style={styles.comingSoonMethod}>Histogram Combing</div>
+          <div style={styles.comingSoonMethod}>ML Classifier</div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -92,10 +122,26 @@ const styles = {
     cursor          : 'pointer',
     transition      : 'color 0.15s',
     marginBottom    : '-1px',
+    display         : 'flex',
+    alignItems      : 'center',
+    gap             : '8px',
   },
   tabActive: {
     color           : '#E8E8E8',
     borderBottom    : '1px solid #E8E8E8',
+  },
+  tabDisabled: {
+    color           : '#2A2A2A',
+  },
+  comingSoonBadge: {
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '9px',
+    letterSpacing   : '0.08em',
+    textTransform   : 'uppercase',
+    color           : '#3A3A3A',
+    border          : '1px solid #2A2A2A',
+    borderRadius    : '3px',
+    padding         : '1px 5px',
   },
   main: {
     flex            : 1,
@@ -111,5 +157,49 @@ const styles = {
     fontSize        : '11px',
     letterSpacing   : '0.05em',
     color           : '#2A2A2A',
+  },
+
+  // Coming soon panel
+  comingSoonWrapper: {
+    display         : 'flex',
+    alignItems      : 'flex-start',
+    justifyContent  : 'center',
+    paddingTop      : '48px',
+  },
+  comingSoonBox: {
+    border          : '1px solid #2A2A2A',
+    borderRadius    : '8px',
+    padding         : '32px',
+    maxWidth        : '480px',
+    width           : '100%',
+    display         : 'flex',
+    flexDirection   : 'column',
+    gap             : '20px',
+  },
+  comingSoonLabel: {
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '11px',
+    letterSpacing   : '0.1em',
+    textTransform   : 'uppercase',
+    color           : '#4A4A4A',
+  },
+  comingSoonText: {
+    fontSize        : '13px',
+    color           : '#4A4A4A',
+    lineHeight      : '1.7',
+    margin          : 0,
+  },
+  comingSoonMethods: {
+    display         : 'flex',
+    flexDirection   : 'column',
+    gap             : '8px',
+  },
+  comingSoonMethod: {
+    fontFamily      : "'JetBrains Mono', monospace",
+    fontSize        : '11px',
+    color           : '#2A2A2A',
+    letterSpacing   : '0.05em',
+    paddingLeft     : '12px',
+    borderLeft      : '1px solid #2A2A2A',
   },
 }
