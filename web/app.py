@@ -21,6 +21,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -43,29 +44,6 @@ app.add_middleware(
 TEMP_DIR = Path(tempfile.gettempdir()) / "scry_uploads"
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ---------------------------------------------------------------------------
-# Method × format compatibility
-# Defines which method/format combos are blocked and why.
-# Used to return a clear 400 before any processing begins.
-# ---------------------------------------------------------------------------
-
-# Formats where LSB spatial methods simply cannot work (lossy compression
-# will destroy the bit stream). Metadata and DWT have their own handling.
-LSB_INCOMPATIBLE_FORMATS = {".jpg", ".jpeg"}  # WebP is converted upstream
-
-def _check_method_format_compatibility(method: str, suffix: str) -> str | None:
-    """
-    Returns a human-readable error string if the method/format combo is
-    incompatible, or None if it's fine.
-
-    Note: JPEG + LSB is not blocked here — we convert it to PNG automatically
-    and warn the user. This check is reserved for truly unresolvable combos.
-    Currently no hard blocks exist — all incompatibilities are handled via
-    conversion or warnings. Keeping this function as the single place to
-    add future blocks (e.g. if we ever want to block animated WebP).
-    """
-    return None
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,12 +57,14 @@ def save_upload(upload: UploadFile) -> Path:
     return path
 
 
-def cleanup(path: Path) -> None:
-    try:
-        if path and path.exists():
-            os.unlink(path)
-    except Exception:
-        pass
+def cleanup(*paths) -> None:
+    """Delete one or more temp files, silently ignoring missing files."""
+    for path in paths:
+        try:
+            if path and Path(str(path)).exists():
+                os.unlink(str(path))
+        except Exception:
+            pass
 
 
 def run_detection_pipeline(image_path: Path) -> dict:
@@ -196,9 +176,9 @@ async def embed(
     method  : str        = Form("lsb_matching"),
 ):
     src_path    = None
-    dst_path    = None
-    png_path    = None
-    output_path = None  # the file we actually send back
+    png_path    = None   # intermediate conversion file (if needed)
+    dst_path    = None   # pre-allocated output path passed to embedder
+    output_path = None   # actual file on disk to serve (may differ from dst_path)
 
     VALID_METHODS = {"lsb_replacement", "lsb_matching", "metadata", "dwt"}
 
@@ -210,14 +190,10 @@ async def embed(
             )
 
         src_path = save_upload(file)
-        suffix   = Path(src_path).suffix.lower()
 
         from core.format_handler import classify, EmbeddingDomain
         info = classify(str(src_path))
 
-        # ------------------------------------------------------------------
-        # Format support check
-        # ------------------------------------------------------------------
         if not info.is_supported:
             raise HTTPException(
                 status_code = 400,
@@ -228,39 +204,39 @@ async def embed(
             )
 
         # ------------------------------------------------------------------
-        # Metadata — handle first, before any format conversion.
-        # JPEG inputs are converted to PNG — PNG tEXt chunks are more
-        # reliable than JPEG EXIF for the embed/decode round-trip.
+        # Metadata
         # ------------------------------------------------------------------
         if method == "metadata":
             from core.metadata_embedder import embed_metadata
 
-            if suffix in ('.jpg', '.jpeg'):
-                png_path  = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
-                Image.open(str(src_path)).convert("RGB").save(
-                    str(png_path), format="PNG"
-                )
-                embed_src  = str(png_path)
+            src_suffix = src_path.suffix.lower()
+
+            # Pre-allocate dst_path with the correct extension.
+            # WebP will be redirected to .png inside embed_metadata, so
+            # we pass a .png dst_path for WebP to avoid a stale .webp temp file.
+            if src_suffix == ".webp":
                 out_suffix = ".png"
             else:
-                embed_src  = str(src_path)
-                out_suffix = suffix
+                out_suffix = src_suffix
 
-            dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego{out_suffix}"
-            embed_metadata(embed_src, message, str(dst_path))
-            output_path   = dst_path
-            download_name = Path(file.filename).stem + f"_stego{out_suffix}"
+            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego{out_suffix}"
+
+            result = embed_metadata(str(src_path), message, str(dst_path))
+
+            # embed_metadata returns the actual path written — always use it.
+            # For WebP this will be a .png path; for TIFF it stays .tiff.
+            output_path   = Path(result["output_path"])
+            actual_suffix = output_path.suffix.lower()
+            download_name = Path(file.filename).stem + f"_stego{actual_suffix}"
 
         # ------------------------------------------------------------------
         # DWT — always outputs PNG regardless of input format.
-        # JPEG files are converted to PNG first so full frequency content
-        # is available (JPEG HH sub-bands are near-zero after lossy compression).
         # ------------------------------------------------------------------
         elif method == "dwt":
             from core.dwt_embedder import embed_dwt
 
-            if suffix in ('.jpg', '.jpeg'):
-                png_path  = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
+            if src_path.suffix.lower() in ('.jpg', '.jpeg'):
+                png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
                 Image.open(str(src_path)).convert("RGB").save(
                     str(png_path), format="PNG"
                 )
@@ -268,20 +244,18 @@ async def embed(
             else:
                 embed_src = str(src_path)
 
-            dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
-            result        = embed_dwt(embed_src, message, str(dst_path))
-            # embed_dwt always saves as .png — use the path it actually wrote
-            output_path   = Path(result["output_path"])
+            dst_path    = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+            result      = embed_dwt(embed_src, message, str(dst_path))
+            output_path = Path(result["output_path"])
             download_name = Path(file.filename).stem + "_stego.png"
 
         # ------------------------------------------------------------------
-        # Spatial methods (lsb_matching, lsb_replacement).
-        # JPEG inputs are converted to PNG — spatial LSB cannot survive
-        # lossy recompression.
+        # Spatial LSB (lsb_matching, lsb_replacement)
+        # JPEG/lossy WebP are converted to PNG first.
         # ------------------------------------------------------------------
         else:
             if info.embedding_domain == EmbeddingDomain.DCT:
-                png_path  = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
+                png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
                 Image.open(str(src_path)).convert("RGB").save(
                     str(png_path), format="PNG"
                 )
@@ -301,29 +275,33 @@ async def embed(
             output_path   = dst_path
             download_name = Path(file.filename).stem + "_stego.png"
 
+        # ------------------------------------------------------------------
+        # Serve the file.
+        # Temp files are cleaned up AFTER the response is sent via
+        # BackgroundTask — never before, or FileResponse will fail.
+        # ------------------------------------------------------------------
+        files_to_cleanup = [p for p in [src_path, png_path] if p]
+        if dst_path and Path(str(dst_path)) != output_path:
+            files_to_cleanup.append(dst_path)
+
         return FileResponse(
             path       = str(output_path),
             media_type = "application/octet-stream",
             filename   = download_name,
+            background = BackgroundTask(cleanup, *files_to_cleanup, output_path),
         )
 
     except HTTPException:
+        cleanup(src_path, png_path, dst_path)
         raise
     except Exception as e:
+        cleanup(src_path, png_path, dst_path)
+        if output_path and output_path != dst_path:
+            cleanup(output_path)
         raise HTTPException(
             status_code = 500,
             detail      = f"Embedding failed: {str(e)}"
         )
-    finally:
-        if src_path: cleanup(src_path)
-        if png_path: cleanup(png_path)
-        # Only clean dst_path if it differs from what we served.
-        # If embed_dwt redirected to a different path, dst_path was never
-        # written to and output_path is the real file — both get cleaned up.
-        if dst_path and dst_path != output_path:
-            cleanup(dst_path)
-        if output_path:
-            cleanup(output_path)
 
 
 @app.post("/api/decode")

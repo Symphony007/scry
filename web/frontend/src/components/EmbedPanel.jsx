@@ -20,7 +20,7 @@ const METHODS = [
   {
     id   : 'dwt',
     label: 'DWT',
-    desc : 'Frequency domain embedding. Lower capacity than LSB — output always PNG.',
+    desc : 'Frequency domain embedding. Requires large images (≥512×512). Output always PNG.',
   },
 ]
 
@@ -39,28 +39,35 @@ const FORMAT_NOTES = {
   ],
   metadata: [
     { key: 'PNG',           val: 'Stored in tEXt chunk — zero pixel change' },
-    { key: 'JPEG',          val: 'Converted to PNG, stored in tEXt chunk' },
-    { key: 'TIFF',          val: 'Stored in ImageDescription tag — zero pixel change' },
-    { key: 'WebP',          val: 'Converted to PNG, stored in tEXt chunk' },
+    { key: 'JPEG',          val: 'Stored in EXIF UserComment — zero pixel change' },
+    { key: 'TIFF',          val: 'Converted to PNG, stored in tEXt chunk — output is PNG' },
+    { key: 'WebP',          val: 'Converted to PNG, stored in tEXt chunk — output is PNG' },
   ],
   dwt: [
     { key: 'All formats',   val: 'DWT on R channel — output always PNG' },
     { key: 'JPEG',          val: 'Converted to PNG first — JPEG HH sub-bands are near-zero' },
-    { key: 'Capacity',      val: '~25% of spatial LSB capacity' },
+    { key: 'Capacity',      val: '~12% of spatial LSB capacity at step=32' },
     { key: 'PSNR',          val: 'Typically 38–45 dB (mild quality loss)' },
   ],
 }
 
 const JPEG_SUFFIXES = ['jpg', 'jpeg']
+const PNG_CONVERTED_METADATA_SUFFIXES = ['tiff', 'tif', 'webp']
 
 function getFileExtension(filename) {
   return filename.split('.').pop().toLowerCase()
 }
 
-function shouldWarnConversion(method, filename) {
+function shouldWarnJpegConversion(method, filename) {
   if (!filename) return false
   if (method === 'metadata') return false
   return JPEG_SUFFIXES.includes(getFileExtension(filename))
+}
+
+function shouldWarnMetadataPngConversion(method, filename) {
+  if (!filename) return false
+  if (method !== 'metadata') return false
+  return PNG_CONVERTED_METADATA_SUFFIXES.includes(getFileExtension(filename))
 }
 
 export default function EmbedPanel() {
@@ -122,10 +129,12 @@ export default function EmbedPanel() {
     }
   }
 
-  const byteCount    = new TextEncoder().encode(message).length
-  const activeMethod = METHODS.find(m => m.id === method)
-  const formatNotes  = FORMAT_NOTES[method]
-  const showJpegWarn = shouldWarnConversion(method, file?.name)
+  const byteCount               = new TextEncoder().encode(message).length
+  const activeMethod            = METHODS.find(m => m.id === method)
+  const formatNotes             = FORMAT_NOTES[method]
+  const showJpegWarn            = shouldWarnJpegConversion(method, file?.name)
+  const showMetadataPngWarn     = shouldWarnMetadataPngConversion(method, file?.name)
+  const showDwtWarn             = method === 'dwt'
 
   return (
     <div style={styles.grid}>
@@ -163,10 +172,19 @@ export default function EmbedPanel() {
           </div>
         )}
 
+        {/* JPEG conversion warning — spatial methods only */}
         {showJpegWarn && (
           <div style={styles.conversionNote}>
             <span style={styles.conversionDot} />
-            JPEG detected — will be converted to PNG before embedding. Output file will be PNG.
+            JPEG detected — will be converted to PNG before embedding. Output will be PNG.
+          </div>
+        )}
+
+        {/* TIFF/WebP + metadata conversion note */}
+        {showMetadataPngWarn && (
+          <div style={styles.conversionNote}>
+            <span style={styles.conversionDot} />
+            {getFileExtension(file?.name ?? '').toUpperCase()} metadata embedding uses PNG tEXt chunks — output will be PNG. Lossless conversion, no quality loss.
           </div>
         )}
 
@@ -207,6 +225,19 @@ export default function EmbedPanel() {
             </button>
           ))}
         </div>
+
+        {/* DWT capacity warning — always shown when DWT is selected */}
+        {showDwtWarn && (
+          <div style={styles.dwtWarning}>
+            <div style={styles.dwtWarningTitle}>DWT capacity is limited</div>
+            <p style={styles.dwtWarningText}>
+              DWT embedding requires large images with high-frequency detail.
+              Images smaller than 512×512 pixels may have zero usable capacity.
+              Smooth or flat images (solid colours, gradients) also tend to fail.
+              If embedding fails, switch to LSB Matching or use a larger image.
+            </p>
+          </div>
+        )}
 
         <button
           onClick={handleSubmit}
@@ -352,7 +383,7 @@ const styles = {
   },
   conversionNote: {
     display       : 'flex',
-    alignItems    : 'center',
+    alignItems    : 'flex-start',
     gap           : '8px',
     padding       : '10px 12px',
     background    : '#161616',
@@ -361,7 +392,7 @@ const styles = {
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
     color         : '#6B6B6B',
-    lineHeight    : '1.5',
+    lineHeight    : '1.6',
     marginTop     : '-8px',
   },
   conversionDot: {
@@ -370,6 +401,7 @@ const styles = {
     borderRadius  : '50%',
     background    : '#4A4A4A',
     flexShrink    : 0,
+    marginTop     : '4px',
   },
   textarea: {
     width         : '100%',
@@ -416,6 +448,29 @@ const styles = {
     background    : '#1F1F1F',
     border        : '1px solid #6B6B6B',
     color         : '#E8E8E8',
+  },
+  dwtWarning: {
+    padding       : '12px 14px',
+    background    : '#161616',
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '6px',
+    display       : 'flex',
+    flexDirection : 'column',
+    gap           : '6px',
+    marginTop     : '-8px',
+  },
+  dwtWarningTitle: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    letterSpacing : '0.08em',
+    textTransform : 'uppercase',
+    color         : '#6B6B6B',
+  },
+  dwtWarningText: {
+    fontSize      : '12px',
+    color         : '#4A4A4A',
+    margin        : 0,
+    lineHeight    : '1.7',
   },
   btn: {
     padding       : '12px 0',

@@ -9,9 +9,17 @@ they operate on pixel data only.
 
 Method depends on format:
     PNG  — stores message in a tEXt ancillary chunk under a fixed key
-    JPEG — stores message in the EXIF UserComment field
-    TIFF — stores message in ImageDescription tag
-    WebP — converted to PNG, stored in tEXt chunk
+    JPEG — stores message in EXIF UserComment field via piexif
+    TIFF — converted to PNG, stored in tEXt chunk (output is .png)
+    WebP — converted to PNG, stored in tEXt chunk (output is .png)
+
+Why TIFF and WebP are converted to PNG:
+    piexif's TIFF write path produces EXIF bytes that Pillow saves
+    correctly but reads back as raw bytes rather than a decoded string,
+    causing UTF-8 decode errors on the round-trip. PNG tEXt chunks
+    are the most reliable metadata container available — they round-trip
+    cleanly across all Pillow versions and are lossless, so converting
+    a TIFF (also lossless) to PNG loses no image quality.
 
 Tradeoffs vs pixel-based methods:
     + Zero pixel change — statistically undetectable
@@ -19,9 +27,9 @@ Tradeoffs vs pixel-based methods:
     - File size increases by roughly len(message) bytes
     - Anyone inspecting metadata directly can find the message
     - Stripped by most social media platforms on upload
-    - Not suitable when file size or metadata is analysed
+    - TIFF and WebP inputs produce PNG output files
 
-Documented limitation (KNOWN_ISSUES.md):
+Documented limitation:
     Metadata is stripped by virtually all image hosting platforms
     (Discord, Twitter, Instagram, WhatsApp). This method is only
     appropriate for direct file transfer between parties.
@@ -30,14 +38,15 @@ Documented limitation (KNOWN_ISSUES.md):
 from pathlib import Path
 from PIL import Image
 import piexif
-import json
 
 
 # Fixed metadata key used to identify Scry-embedded messages
-SCRY_PNG_KEY  = "scry_payload"
-SCRY_TIFF_TAG = 270   # ImageDescription tag ID
+SCRY_PNG_KEY = "scry_payload"
 
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".webp"}
+
+# Formats that are converted to PNG for metadata embedding
+PNG_CONVERTED_SUFFIXES = {".tiff", ".tif", ".webp"}
 
 
 def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
@@ -47,10 +56,11 @@ def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
     Args:
         image_path  : path to cover image (PNG, JPEG, TIFF, or WebP)
         message     : UTF-8 message to hide
-        output_path : path to save the output image
+        output_path : desired output path
 
     Returns:
-        dict with method, bits_used, pixel_delta, format
+        dict with method, bits_used, pixel_delta, format, output_path
+        NOTE: always use result["output_path"] — TIFF and WebP redirect to .png.
 
     Raises:
         ValueError: if format is not supported for metadata embedding
@@ -67,33 +77,33 @@ def embed_metadata(image_path: str, message: str, output_path: str) -> dict:
 
     if suffix == ".png":
         _embed_png(img, message, output_path)
-        fmt = "PNG"
+        fmt        = "PNG"
+        actual_out = output_path
 
     elif suffix in (".jpg", ".jpeg"):
         _embed_jpeg(img, message, image_path, output_path)
-        fmt = "JPEG"
+        fmt        = "JPEG"
+        actual_out = output_path
 
-    elif suffix in (".tiff", ".tif"):
-        _embed_tiff(img, message, output_path)
-        fmt = "TIFF"
-
-    elif suffix == ".webp":
-        # Convert to PNG and store in tEXt chunk
+    elif suffix in PNG_CONVERTED_SUFFIXES:
+        # TIFF and WebP both convert to PNG — most reliable metadata container
         png_output = str(Path(output_path).with_suffix(".png"))
         _embed_png(img, message, png_output)
-        output_path = png_output
-        fmt = "PNG"
+        fmt        = "PNG"
+        actual_out = png_output
 
     bits_used = len(message.encode("utf-8")) * 8
 
     print(f"[METADATA] Message embedded in {fmt} metadata.")
     print(f"[METADATA] {bits_used} bits — zero pixel modification.")
+    print(f"[METADATA] Output: {actual_out}")
 
     return {
         "method"      : "metadata",
         "bits_used"   : bits_used,
         "pixel_delta" : 0,
         "format"      : fmt,
+        "output_path" : actual_out,
     }
 
 
@@ -108,8 +118,7 @@ def decode_metadata(image_path: str) -> str:
         Decoded message string.
 
     Raises:
-        ValueError: if no Scry payload is found in metadata
-        ValueError: if format is unsupported
+        ValueError: if no Scry payload found, or unsupported format
     """
     suffix = Path(image_path).suffix.lower()
 
@@ -124,15 +133,11 @@ def decode_metadata(image_path: str) -> str:
     elif suffix in (".jpg", ".jpeg"):
         return _decode_jpeg(image_path)
 
-    elif suffix in (".tiff", ".tif"):
-        return _decode_tiff(image_path)
-
-    elif suffix == ".webp":
-        # WebP metadata embeds are stored as PNG — shouldn't reach here
-        # in normal flow, but handle gracefully
+    elif suffix in PNG_CONVERTED_SUFFIXES:
         raise ValueError(
-            "WebP metadata payloads are stored in a converted PNG file. "
-            "Please upload the PNG output from the embed step."
+            f"{'TIFF' if 'tif' in suffix else 'WebP'} metadata payloads are "
+            f"stored as PNG. Please upload the .png file that was downloaded "
+            f"after embedding."
         )
 
     raise ValueError(f"No metadata decoder available for '{suffix}'.")
@@ -164,7 +169,7 @@ def _decode_png(image_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# JPEG — EXIF UserComment
+# JPEG — EXIF UserComment (piexif)
 # ---------------------------------------------------------------------------
 
 def _embed_jpeg(
@@ -179,8 +184,6 @@ def _embed_jpeg(
     except Exception:
         exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}}
 
-    # UserComment requires a specific encoding prefix
-    # "ASCII\x00\x00\x00" + message bytes is the standard format
     prefix  = b"ASCII\x00\x00\x00"
     payload = prefix + message.encode("utf-8")
     exif_dict["Exif"][piexif.ExifIFD.UserComment] = payload
@@ -199,9 +202,7 @@ def _decode_jpeg(image_path: str) -> str:
             "The file may not contain a Scry metadata payload."
         )
 
-    user_comment = exif_dict.get("Exif", {}).get(
-        piexif.ExifIFD.UserComment
-    )
+    user_comment = exif_dict.get("Exif", {}).get(piexif.ExifIFD.UserComment)
 
     if not user_comment:
         raise ValueError(
@@ -209,45 +210,8 @@ def _decode_jpeg(image_path: str) -> str:
             "This image was not embedded with the metadata method."
         )
 
-    # Strip the encoding prefix if present
     prefix = b"ASCII\x00\x00\x00"
     if user_comment.startswith(prefix):
         user_comment = user_comment[len(prefix):]
 
     return user_comment.decode("utf-8")
-
-
-# ---------------------------------------------------------------------------
-# TIFF — ImageDescription tag
-# ---------------------------------------------------------------------------
-
-def _embed_tiff(img: Image.Image, message: str, output_path: str) -> None:
-    """Store message in TIFF ImageDescription tag."""
-    # Wrap in a JSON envelope so we can distinguish Scry payloads
-    # from legitimate ImageDescription values
-    envelope = json.dumps({"scry": message})
-    tiffinfo  = Image.Exif()
-    tiffinfo[SCRY_TIFF_TAG] = envelope
-    img.save(output_path, format="TIFF", exif=tiffinfo)
-
-
-def _decode_tiff(image_path: str) -> str:
-    """Extract message from TIFF ImageDescription tag."""
-    with Image.open(image_path) as img:
-        exif = img.getexif()
-
-    raw = exif.get(SCRY_TIFF_TAG)
-    if not raw:
-        raise ValueError(
-            "No Scry payload found in TIFF ImageDescription tag. "
-            "This image was not embedded with the metadata method."
-        )
-
-    try:
-        envelope = json.loads(raw)
-        return envelope["scry"]
-    except (json.JSONDecodeError, KeyError):
-        raise ValueError(
-            "ImageDescription tag found but does not contain a Scry payload. "
-            "The tag may contain legitimate image description data."
-        )
