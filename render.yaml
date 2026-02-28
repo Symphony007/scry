@@ -7,16 +7,10 @@ services:
     env: python
     region: oregon   # change to: frankfurt, singapore, ohio, virginia
 
-    # Build — install Python deps, then build React frontend
-    # Render's Python environment includes Node.js so npm is available
-    buildCommand: |
-      pip install -r requirements.txt &&
-      cd web/frontend &&
-      npm install &&
-      npm run build
+    # Single-line buildCommand required — multiline | syntax skips subsequent commands on Render
+    buildCommand: pip install -r requirements.txt && cd web/frontend && npm install && npm run build
 
-    # Start — uvicorn from project root, PYTHONPATH includes root so
-    # core/, detectors/, ml/ are importable
+    # Start — uvicorn from project root, app.py adds its own paths to sys.path
     startCommand: uvicorn web.app:app --host 0.0.0.0 --port $PORT --workers 2
 
     # Auto-deploy on every push to main
