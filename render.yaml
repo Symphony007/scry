@@ -17,7 +17,7 @@ services:
 
     # Start — uvicorn from project root, PYTHONPATH includes root so
     # core/, detectors/, ml/ are importable
-    startCommand: PYTHONPATH=/opt/render/project/src uvicorn web.app:app --host 0.0.0.0 --port $PORT --workers 2
+    startCommand: PYTHONPATH=/opt/render/project/src:/opt/render/project/src/web uvicorn web.app:app --host 0.0.0.0 --port $PORT --workers 2
 
     # Auto-deploy on every push to main
     autoDeploy: true
