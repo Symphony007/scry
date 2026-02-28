@@ -51,6 +51,25 @@ const FORMAT_NOTES = {
   ],
 }
 
+const PLANNED_METHODS = [
+  {
+    name: 'PVD',
+    desc: 'Pixel Value Differencing — hides data in differences between adjacent pixels. Higher capacity in textured regions.',
+  },
+  {
+    name: 'Spread Spectrum',
+    desc: 'Distributes bits across pixels using a pseudorandom key. Highly robust — requires the key to decode.',
+  },
+  {
+    name: 'Palette-based',
+    desc: 'Modifies color palette order in indexed images. Zero pixel change — no statistical fingerprint.',
+  },
+  {
+    name: 'DCT Coefficient',
+    desc: 'Direct JPEG DCT coefficient modification. Survives JPEG recompression — unlike spatial LSB methods.',
+  },
+]
+
 const JPEG_SUFFIXES = ['jpg', 'jpeg']
 const PNG_CONVERTED_METADATA_SUFFIXES = ['tiff', 'tif', 'webp']
 
@@ -129,22 +148,24 @@ export default function EmbedPanel() {
     }
   }
 
-  const byteCount               = new TextEncoder().encode(message).length
-  const activeMethod            = METHODS.find(m => m.id === method)
-  const formatNotes             = FORMAT_NOTES[method]
-  const showJpegWarn            = shouldWarnJpegConversion(method, file?.name)
-  const showMetadataPngWarn     = shouldWarnMetadataPngConversion(method, file?.name)
-  const showDwtWarn             = method === 'dwt'
+  const byteCount           = new TextEncoder().encode(message).length
+  const activeMethod        = METHODS.find(m => m.id === method)
+  const formatNotes         = FORMAT_NOTES[method]
+  const showJpegWarn        = shouldWarnJpegConversion(method, file?.name)
+  const showMetadataPngWarn = shouldWarnMetadataPngConversion(method, file?.name)
+  const showDwtWarn         = method === 'dwt'
 
   return (
     <div style={styles.grid}>
 
-      {/* Left — inputs */}
+      {/* ── Left — inputs ── */}
       <div style={styles.column}>
 
         <div style={styles.sectionHeader}>
           <div style={styles.sectionLabel}>01 — Cover Image</div>
-          <div style={styles.sectionDesc}>PNG, JPEG, WebP, or TIFF. The image that will carry your hidden message.</div>
+          <div style={styles.sectionDesc}>
+            PNG, JPEG, WebP, or TIFF. The image that will carry your hidden message.
+          </div>
         </div>
 
         <div
@@ -155,7 +176,12 @@ export default function EmbedPanel() {
         >
           {preview
             ? <img src={preview} alt="preview" style={styles.preview} />
-            : <span style={styles.dropText}>Drop image or click to browse</span>
+            : (
+              <div style={styles.dropInner}>
+                <span style={styles.dropText}>Drop image or click to browse</span>
+                <span style={styles.dropHint}>PNG · JPEG · WebP · TIFF</span>
+              </div>
+            )
           }
           <input
             id="embed-input"
@@ -172,7 +198,6 @@ export default function EmbedPanel() {
           </div>
         )}
 
-        {/* JPEG conversion warning — spatial methods only */}
         {showJpegWarn && (
           <div style={styles.conversionNote}>
             <span style={styles.conversionDot} />
@@ -180,11 +205,10 @@ export default function EmbedPanel() {
           </div>
         )}
 
-        {/* TIFF/WebP + metadata conversion note */}
         {showMetadataPngWarn && (
           <div style={styles.conversionNote}>
             <span style={styles.conversionDot} />
-            {getFileExtension(file?.name ?? '').toUpperCase()} metadata embedding uses PNG tEXt chunks — output will be PNG. Lossless conversion, no quality loss.
+            {getFileExtension(file?.name ?? '').toUpperCase()} metadata embedding uses PNG tEXt chunks — output will be PNG. Lossless, no quality loss.
           </div>
         )}
 
@@ -226,7 +250,6 @@ export default function EmbedPanel() {
           ))}
         </div>
 
-        {/* DWT capacity warning — always shown when DWT is selected */}
         {showDwtWarn && (
           <div style={styles.dwtWarning}>
             <div style={styles.dwtWarningTitle}>DWT capacity is limited</div>
@@ -252,14 +275,23 @@ export default function EmbedPanel() {
 
         {error && <div style={styles.errorBox}>{error}</div>}
 
+        {done && (
+          <div style={styles.successBox}>
+            Download started — do not re-save or convert the output image.
+            Any post-processing will corrupt the hidden message.
+          </div>
+        )}
+
       </div>
 
-      {/* Right — info + status */}
+      {/* ── Right — info ── */}
       <div style={styles.column}>
 
         <div style={styles.sectionHeader}>
           <div style={styles.sectionLabel}>Format Behaviour</div>
-          <div style={styles.sectionDesc}>How the selected method handles each format.</div>
+          <div style={styles.sectionDesc}>
+            How the selected method handles each image format.
+          </div>
         </div>
 
         <div style={styles.infoBlock}>
@@ -281,20 +313,20 @@ export default function EmbedPanel() {
         <div style={styles.statusBlock}>
           {!file && !done && (
             <div style={styles.statusRow}>
-              <div style={{ ...styles.dot, background: '#2A2A2A' }} />
+              <div style={{ ...styles.dot, background: '#3A3A3A' }} />
               <span>Waiting for image</span>
             </div>
           )}
           {file && !loading && !done && (
             <div style={styles.statusRow}>
-              <div style={{ ...styles.dot, background: '#4A4A4A' }} />
-              <span>Ready — {file.name}</span>
+              <div style={{ ...styles.dot, background: '#6B6B6B' }} />
+              <span style={{ color: '#9A9A9A' }}>Ready — {file.name}</span>
             </div>
           )}
           {loading && (
             <div style={styles.statusRow}>
-              <div style={{ ...styles.dot, background: '#6B6B6B' }} />
-              <span>Processing...</span>
+              <div style={{ ...styles.dot, background: '#9A9A9A' }} />
+              <span style={{ color: '#9A9A9A' }}>Processing...</span>
             </div>
           )}
           {done && (
@@ -306,12 +338,35 @@ export default function EmbedPanel() {
         </div>
 
         <div style={styles.noteBlock}>
-          <div style={styles.sectionLabel}>Note</div>
+          <div style={styles.sectionLabel}>Important</div>
           <p style={styles.noteText}>
-            Do not re-save or convert the output image after downloading.
-            Any lossy compression applied after embedding will destroy the hidden message.
-            Metadata method is additionally stripped by most social media platforms.
+            Do not re-save, convert, compress, or screenshot the output image.
+            Any lossy operation after embedding will corrupt or destroy the payload.
+            Metadata embeds are additionally stripped by social media platforms on upload.
+            Share the downloaded file directly.
           </p>
+        </div>
+
+        <div style={styles.sectionHeader}>
+          <div style={styles.sectionLabel}>Planned Methods</div>
+          <div style={styles.sectionDesc}>
+            Embedding techniques under development.
+          </div>
+        </div>
+
+        <div style={styles.plannedBlock}>
+          {PLANNED_METHODS.map((m, i) => (
+            <div key={m.name}>
+              {i > 0 && <div style={styles.plannedDivider} />}
+              <div style={styles.plannedRow}>
+                <div style={styles.plannedHeader}>
+                  <span style={styles.plannedName}>{m.name}</span>
+                  <span style={styles.plannedBadge}>planned</span>
+                </div>
+                <p style={styles.plannedDesc}>{m.desc}</p>
+              </div>
+            </div>
+          ))}
         </div>
 
       </div>
@@ -342,11 +397,11 @@ const styles = {
     fontSize      : '11px',
     letterSpacing : '0.1em',
     textTransform : 'uppercase',
-    color         : '#4A4A4A',
+    color         : '#6B6B6B',   // was #4A4A4A
   },
   sectionDesc: {
     fontSize      : '13px',
-    color         : '#6B6B6B',
+    color         : '#9A9A9A',   // was #6B6B6B
   },
   dropzone: {
     border        : '1px solid #2A2A2A',
@@ -361,13 +416,25 @@ const styles = {
     transition    : 'border-color 0.15s',
   },
   dropzoneActive: {
-    borderColor   : '#4A4A4A',
+    borderColor   : '#5A5A5A',   // was #4A4A4A
+  },
+  dropInner: {
+    display       : 'flex',
+    flexDirection : 'column',
+    alignItems    : 'center',
+    gap           : '8px',
   },
   dropText: {
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
-    color         : '#2A2A2A',
+    color         : '#5A5A5A',   // was #2A2A2A
     letterSpacing : '0.05em',
+  },
+  dropHint: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '10px',
+    color         : '#3A3A3A',   // was #1F1F1F
+    letterSpacing : '0.08em',
   },
   preview: {
     width         : '100%',
@@ -378,7 +445,7 @@ const styles = {
   fileMeta: {
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
-    color         : '#4A4A4A',
+    color         : '#6B6B6B',   // was #4A4A4A
     marginTop     : '-8px',
   },
   conversionNote: {
@@ -391,7 +458,7 @@ const styles = {
     borderRadius  : '6px',
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
-    color         : '#6B6B6B',
+    color         : '#9A9A9A',   // was #6B6B6B
     lineHeight    : '1.6',
     marginTop     : '-8px',
   },
@@ -399,7 +466,7 @@ const styles = {
     width         : '5px',
     height        : '5px',
     borderRadius  : '50%',
-    background    : '#4A4A4A',
+    background    : '#6B6B6B',   // was #4A4A4A
     flexShrink    : 0,
     marginTop     : '4px',
   },
@@ -416,14 +483,13 @@ const styles = {
     outline       : 'none',
     lineHeight    : '1.6',
     boxSizing     : 'border-box',
-    transition    : 'border-color 0.15s',
   },
   charRow: {
     display        : 'flex',
     justifyContent : 'space-between',
     fontFamily     : "'JetBrains Mono', monospace",
     fontSize       : '11px',
-    color          : '#4A4A4A',
+    color          : '#6B6B6B',   // was #4A4A4A
     marginTop      : '-8px',
   },
   methodGrid: {
@@ -436,7 +502,7 @@ const styles = {
     background    : '#161616',
     border        : '1px solid #2A2A2A',
     borderRadius  : '6px',
-    color         : '#4A4A4A',
+    color         : '#6B6B6B',   // was #4A4A4A
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
     letterSpacing : '0.08em',
@@ -446,7 +512,7 @@ const styles = {
   },
   methodBtnActive: {
     background    : '#1F1F1F',
-    border        : '1px solid #6B6B6B',
+    border        : '1px solid #9A9A9A',  // was #6B6B6B
     color         : '#E8E8E8',
   },
   dwtWarning: {
@@ -464,11 +530,11 @@ const styles = {
     fontSize      : '11px',
     letterSpacing : '0.08em',
     textTransform : 'uppercase',
-    color         : '#6B6B6B',
+    color         : '#9A9A9A',   // was #6B6B6B
   },
   dwtWarningText: {
     fontSize      : '12px',
-    color         : '#4A4A4A',
+    color         : '#7A7A7A',   // was #4A4A4A
     margin        : 0,
     lineHeight    : '1.7',
   },
@@ -488,7 +554,7 @@ const styles = {
   },
   btnDisabled: {
     background    : '#1F1F1F',
-    color         : '#2A2A2A',
+    color         : '#4A4A4A',   // was #2A2A2A
     cursor        : 'not-allowed',
   },
   errorBox: {
@@ -496,7 +562,17 @@ const styles = {
     background    : '#161616',
     border        : '1px solid #3A1A1A',
     borderRadius  : '8px',
-    color         : '#A05050',
+    color         : '#C07070',   // was #A05050
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    lineHeight    : '1.6',
+  },
+  successBox: {
+    padding       : '12px 14px',
+    background    : '#161616',
+    border        : '1px solid #1A3A1A',
+    borderRadius  : '8px',
+    color         : '#6AAA6A',   // was #4A7A4A
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
     lineHeight    : '1.6',
@@ -520,7 +596,7 @@ const styles = {
   },
   infoVal: {
     fontSize      : '12px',
-    color         : '#6B6B6B',
+    color         : '#9A9A9A',   // was #6B6B6B
   },
   divider: {
     borderTop     : '1px solid #2A2A2A',
@@ -537,7 +613,7 @@ const styles = {
     gap           : '10px',
     fontFamily    : "'JetBrains Mono', monospace",
     fontSize      : '11px',
-    color         : '#4A4A4A',
+    color         : '#6B6B6B',   // was #4A4A4A
   },
   dot: {
     width         : '6px',
@@ -555,8 +631,50 @@ const styles = {
   },
   noteText: {
     fontSize      : '12px',
-    color         : '#4A4A4A',
+    color         : '#7A7A7A',   // was #4A4A4A
     margin        : 0,
     lineHeight    : '1.7',
+  },
+  plannedBlock: {
+    border        : '1px solid #222222',
+    borderRadius  : '8px',
+    overflow      : 'hidden',
+    background    : '#111111',
+  },
+  plannedRow: {
+    display       : 'flex',
+    flexDirection : 'column',
+    gap           : '4px',
+    padding       : '12px 14px',
+  },
+  plannedHeader: {
+    display       : 'flex',
+    alignItems    : 'center',
+    gap           : '8px',
+  },
+  plannedName: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '11px',
+    color         : '#6B6B6B',   // was #3A3A3A
+    letterSpacing : '0.05em',
+  },
+  plannedBadge: {
+    fontFamily    : "'JetBrains Mono', monospace",
+    fontSize      : '9px',
+    letterSpacing : '0.08em',
+    textTransform : 'uppercase',
+    color         : '#4A4A4A',   // was #2A2A2A
+    border        : '1px solid #2A2A2A',
+    borderRadius  : '3px',
+    padding       : '1px 5px',
+  },
+  plannedDesc: {
+    fontSize      : '12px',
+    color         : '#4A4A4A',   // was #2A2A2A
+    margin        : 0,
+    lineHeight    : '1.6',
+  },
+  plannedDivider: {
+    borderTop     : '1px solid #1A1A1A',
   },
 }
