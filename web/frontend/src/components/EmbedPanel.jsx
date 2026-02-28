@@ -128,7 +128,14 @@ export default function EmbedPanel() {
       const url  = URL.createObjectURL(res.data)
       const link = document.createElement('a')
       link.href     = url
-      link.download = `scry_${file.name.replace(/\.[^.]+$/, '')}.png`
+      // Determine correct output extension based on method + input format
+      // metadata: JPEG stays JPEG, everything else becomes PNG
+      // all other methods: always PNG
+      const inputExt = file.name.split('.').pop().toLowerCase()
+      const isJpeg   = inputExt === 'jpg' || inputExt === 'jpeg'
+      const outExt   = (method === 'metadata' && isJpeg) ? 'jpg' : 'png'
+      const baseName = file.name.replace(/\.[^.]+$/, '')
+      link.download  = `${baseName}_stego.${outExt}`
       link.click()
       URL.revokeObjectURL(url)
       setDone(true)

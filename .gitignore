@@ -9,6 +9,7 @@ build/
 .env
 data/models/
 web/frontend/node_modules/
-web/static/
+static/
 *.pth
 data/
+.DS_Store

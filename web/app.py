@@ -12,48 +12,88 @@ In production, the React app is built and served by FastAPI directly.
 """
 
 import os
+import sys
+from pathlib import Path as _Path
+
+# core/, detectors/, ml/ live at project root (scry/), not inside web/
+# Insert root into sys.path so imports resolve regardless of launch method
+_ROOT = _Path(__file__).parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import uuid
-import tempfile
+import logging
 from pathlib import Path
 from PIL import Image
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
+
+from config import settings
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level   = getattr(logging, settings.log_level.upper(), logging.INFO),
+    format  = "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt = "%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("scry")
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title       = "Scry — Steganography Detection Engine",
+    title       = settings.app_title,
     description = "Detects and embeds steganographic content in images.",
-    version     = "0.1.0",
+    version     = settings.app_version,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"],
+    allow_origins     = settings.cors_origins,
     allow_credentials = True,
     allow_methods     = ["*"],
     allow_headers     = ["*"],
 )
 
-TEMP_DIR = Path(tempfile.gettempdir()) / "scry_uploads"
-TEMP_DIR.mkdir(exist_ok=True)
-
+TEMP_DIR = settings.temp_dir
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def save_upload(upload: UploadFile) -> Path:
+    """
+    Read upload into a temp file.
+    Raises HTTPException 413 if file exceeds MAX_UPLOAD_MB.
+    """
+    data   = upload.file.read()
+    size   = len(data)
+
+    if size > settings.max_upload_bytes:
+        mb = size / (1024 * 1024)
+        raise HTTPException(
+            status_code = 413,
+            detail      = (
+                f"File too large ({mb:.1f} MB). "
+                f"Maximum allowed size is {settings.max_upload_mb} MB."
+            )
+        )
+
     suffix = Path(upload.filename).suffix.lower() or ".png"
     path   = TEMP_DIR / f"{uuid.uuid4().hex}{suffix}"
+
     with open(path, "wb") as f:
-        f.write(upload.file.read())
+        f.write(data)
+
+    logger.debug(f"Saved upload: {path.name} ({size / 1024:.1f} KB)")
     return path
 
 
@@ -63,8 +103,9 @@ def cleanup(*paths) -> None:
         try:
             if path and Path(str(path)).exists():
                 os.unlink(str(path))
-        except Exception:
-            pass
+                logger.debug(f"Cleaned up temp file: {Path(str(path)).name}")
+        except Exception as exc:
+            logger.warning(f"Failed to clean up {path}: {exc}")
 
 
 def run_detection_pipeline(image_path: Path) -> dict:
@@ -77,6 +118,8 @@ def run_detection_pipeline(image_path: Path) -> dict:
     from detectors.rs_analysis import RSAnalysisDetector
     from detectors.histogram   import HistogramDetector
     from detectors.aggregator  import build_type_aware_aggregator
+
+    logger.info(f"Running detection pipeline on: {image_path.name}")
 
     fmt_info    = classify_format(str(image_path))
     img         = PILImage.open(str(image_path)).convert("RGB")
@@ -94,6 +137,11 @@ def run_detection_pipeline(image_path: Path) -> dict:
 
     agg        = build_type_aware_aggregator(type_result)
     agg_result = agg.aggregate(detector_results)
+
+    logger.info(
+        f"Detection complete — verdict: {agg_result.final_verdict.value} "
+        f"({agg_result.final_probability:.2%})"
+    )
 
     return {
         "format": {
@@ -153,20 +201,29 @@ def run_detection_pipeline(image_path: Path) -> dict:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {
+        "status"  : "ok",
+        "version" : settings.app_version,
+        "debug"   : settings.debug,
+    }
 
 
 @app.post("/api/detect")
 async def detect(file: UploadFile = File(...)):
     path = None
     try:
+        logger.info(f"Detect request — file: {file.filename}")
         path   = save_upload(file)
         result = run_detection_pipeline(path)
         return JSONResponse(content=result)
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"Detection failed: {e}")
         raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
     finally:
-        if path: cleanup(path)
+        if path:
+            cleanup(path)
 
 
 @app.post("/api/embed")
@@ -176,13 +233,15 @@ async def embed(
     method  : str        = Form("lsb_matching"),
 ):
     src_path    = None
-    png_path    = None   # intermediate conversion file (if needed)
-    dst_path    = None   # pre-allocated output path passed to embedder
-    output_path = None   # actual file on disk to serve (may differ from dst_path)
+    png_path    = None
+    dst_path    = None
+    output_path = None
 
     VALID_METHODS = {"lsb_replacement", "lsb_matching", "metadata", "dwt"}
 
     try:
+        logger.info(f"Embed request — file: {file.filename}, method: {method}")
+
         if method not in VALID_METHODS:
             raise HTTPException(
                 status_code = 400,
@@ -210,55 +269,38 @@ async def embed(
             from core.metadata_embedder import embed_metadata
 
             src_suffix = src_path.suffix.lower()
+            out_suffix = ".png" if src_suffix in (".webp", ".tiff", ".tif") else src_suffix
+            dst_path   = TEMP_DIR / f"{uuid.uuid4().hex}_stego{out_suffix}"
 
-            # Pre-allocate dst_path with the correct extension.
-            # WebP will be redirected to .png inside embed_metadata, so
-            # we pass a .png dst_path for WebP to avoid a stale .webp temp file.
-            if src_suffix == ".webp":
-                out_suffix = ".png"
-            else:
-                out_suffix = src_suffix
-
-            dst_path = TEMP_DIR / f"{uuid.uuid4().hex}_stego{out_suffix}"
-
-            result = embed_metadata(str(src_path), message, str(dst_path))
-
-            # embed_metadata returns the actual path written — always use it.
-            # For WebP this will be a .png path; for TIFF it stays .tiff.
-            output_path   = Path(result["output_path"])
-            actual_suffix = output_path.suffix.lower()
-            download_name = Path(file.filename).stem + f"_stego{actual_suffix}"
+            result      = embed_metadata(str(src_path), message, str(dst_path))
+            output_path = Path(result["output_path"])
+            download_name = Path(file.filename).stem + output_path.suffix.lower()
 
         # ------------------------------------------------------------------
-        # DWT — always outputs PNG regardless of input format.
+        # DWT
         # ------------------------------------------------------------------
         elif method == "dwt":
             from core.dwt_embedder import embed_dwt
 
             if src_path.suffix.lower() in ('.jpg', '.jpeg'):
                 png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
-                Image.open(str(src_path)).convert("RGB").save(
-                    str(png_path), format="PNG"
-                )
+                Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
                 embed_src = str(png_path)
             else:
                 embed_src = str(src_path)
 
-            dst_path    = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
-            result      = embed_dwt(embed_src, message, str(dst_path))
-            output_path = Path(result["output_path"])
+            dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
+            result        = embed_dwt(embed_src, message, str(dst_path))
+            output_path   = Path(result["output_path"])
             download_name = Path(file.filename).stem + "_stego.png"
 
         # ------------------------------------------------------------------
-        # Spatial LSB (lsb_matching, lsb_replacement)
-        # JPEG/lossy WebP are converted to PNG first.
+        # Spatial LSB
         # ------------------------------------------------------------------
         else:
             if info.embedding_domain == EmbeddingDomain.DCT:
                 png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
-                Image.open(str(src_path)).convert("RGB").save(
-                    str(png_path), format="PNG"
-                )
+                Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
                 embed_src = str(png_path)
             else:
                 embed_src = str(src_path)
@@ -275,11 +317,8 @@ async def embed(
             output_path   = dst_path
             download_name = Path(file.filename).stem + "_stego.png"
 
-        # ------------------------------------------------------------------
-        # Serve the file.
-        # Temp files are cleaned up AFTER the response is sent via
-        # BackgroundTask — never before, or FileResponse will fail.
-        # ------------------------------------------------------------------
+        logger.info(f"Embed complete — output: {output_path.name}")
+
         files_to_cleanup = [p for p in [src_path, png_path] if p]
         if dst_path and Path(str(dst_path)) != output_path:
             files_to_cleanup.append(dst_path)
@@ -295,23 +334,27 @@ async def embed(
         cleanup(src_path, png_path, dst_path)
         raise
     except Exception as e:
+        logger.exception(f"Embedding failed: {e}")
         cleanup(src_path, png_path, dst_path)
         if output_path and output_path != dst_path:
             cleanup(output_path)
-        raise HTTPException(
-            status_code = 500,
-            detail      = f"Embedding failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
 
 
 @app.post("/api/decode")
 async def decode_endpoint(file: UploadFile = File(...)):
     path = None
     try:
+        logger.info(f"Decode request — file: {file.filename}")
         path = save_upload(file)
 
         from core.decoder import decode
         result = decode(str(path))
+
+        if result.success:
+            logger.info(f"Decode successful — method: {result.method_used}")
+        else:
+            logger.info(f"Decode found no payload — {result.error}")
 
         return JSONResponse(content={
             "success"         : result.success,
@@ -322,13 +365,14 @@ async def decode_endpoint(file: UploadFile = File(...)):
             "warnings"        : result.warnings,
         })
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(
-            status_code = 500,
-            detail      = f"Decode failed: {str(e)}"
-        )
+        logger.exception(f"Decode failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Decode failed: {str(e)}")
     finally:
-        if path: cleanup(path)
+        if path:
+            cleanup(path)
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +382,7 @@ async def decode_endpoint(file: UploadFile = File(...)):
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
 if STATIC_DIR.exists():
+    logger.info(f"Serving static frontend from: {STATIC_DIR}")
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
     @app.get("/")
@@ -350,3 +395,8 @@ if STATIC_DIR.exists():
         if file_path.exists() and file_path.is_file():
             return FileResponse(str(file_path))
         return FileResponse(str(STATIC_DIR / "index.html"))
+else:
+    logger.warning(
+        f"Static directory not found at {STATIC_DIR}. "
+        f"Run 'npm run build' in web/frontend/ to generate it."
+    )
