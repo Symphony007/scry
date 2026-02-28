@@ -15,11 +15,13 @@ import os
 import sys
 from pathlib import Path as _Path
 
-# core/, detectors/, ml/ live at project root (scry/), not inside web/
-# Insert root into sys.path so imports resolve regardless of launch method
-_ROOT = _Path(__file__).parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+# Add both project root (for core/, detectors/, ml/) and web/ (for config)
+# to sys.path so all imports resolve regardless of how uvicorn is launched
+_ROOT = _Path(__file__).parent.parent   # scry/
+_WEB  = _Path(__file__).parent          # scry/web/
+for _p in [str(_WEB), str(_ROOT)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import uuid
 import logging
