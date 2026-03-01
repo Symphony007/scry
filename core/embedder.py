@@ -45,7 +45,7 @@ def embed(image_path: str, message: str, output_path: str) -> dict:
     if suffix in LOSSY_FORMATS:
         raise ValueError(
             f"Cannot embed into a lossy format ('{suffix}'). "
-            f"Use a PNG, BMP, or TIFF file as the cover image."
+            f"Use a PNG, TIFF, or lossless WebP file as the cover image."
         )
 
     original, _ = load_image(image_path)

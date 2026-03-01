@@ -68,14 +68,6 @@ def test_format_handler_detects_jpeg():
     os.unlink(path)
 
 
-def test_format_handler_detects_bmp():
-    path = save_temp_image(make_noise_array(), ".bmp")
-    info = classify(path)
-    assert info.actual_format == ImageFormat.BMP
-    assert info.compression   == CompressionType.LOSSLESS
-    os.unlink(path)
-
-
 def test_format_handler_detects_tiff():
     path = save_temp_image(make_noise_array(), ".tiff")
     info = classify(path)
@@ -193,19 +185,6 @@ def test_universal_decoder_png_roundtrip():
         result = decode(dst)
         assert result.success
         assert result.message == "PNG round-trip"
-    finally:
-        for p in [src, dst]:
-            if os.path.exists(p): os.unlink(p)
-
-
-def test_universal_decoder_bmp_roundtrip():
-    src = save_temp_image(make_noise_array(128, 128), ".bmp")
-    dst = src.replace(".bmp", "_stego.bmp")
-    try:
-        spatial_embed(src, "BMP round-trip", dst)
-        result = decode(dst)
-        assert result.success
-        assert result.message == "BMP round-trip"
     finally:
         for p in [src, dst]:
             if os.path.exists(p): os.unlink(p)

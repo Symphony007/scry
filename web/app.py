@@ -276,7 +276,7 @@ async def embed(
 
             result      = embed_metadata(str(src_path), message, str(dst_path))
             output_path = Path(result["output_path"])
-            download_name = Path(file.filename).stem + output_path.suffix.lower()
+            download_name = Path(file.filename).stem + "_stego" + output_path.suffix.lower()
 
         # ------------------------------------------------------------------
         # DWT
@@ -300,7 +300,7 @@ async def embed(
         # Spatial LSB
         # ------------------------------------------------------------------
         else:
-            if info.embedding_domain == EmbeddingDomain.DCT:
+            if info.embedding_domain == EmbeddingDomain.DCT or src_path.suffix.lower() == ".webp":
                 png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
                 Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
                 embed_src = str(png_path)

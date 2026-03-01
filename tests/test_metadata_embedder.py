@@ -116,29 +116,33 @@ def test_jpeg_roundtrip_unicode():
 # ---------------------------------------------------------------------------
 
 def test_tiff_roundtrip_ascii():
-    """ASCII message embeds and decodes from TIFF metadata."""
+    """ASCII message embeds and decodes from TIFF metadata (stored as PNG)."""
     arr = make_random_rgb()
     src = save_temp(arr, ".tiff")
     dst = src.replace(".tiff", "_meta.tiff")
+    actual_dst = None
     try:
-        embed_metadata(src, "TIFF metadata test", dst)
-        assert decode_metadata(dst) == "TIFF metadata test"
+        result = embed_metadata(src, "TIFF metadata test", dst)
+        actual_dst = result["output_path"]
+        assert decode_metadata(actual_dst) == "TIFF metadata test"
     finally:
-        for p in [src, dst]:
-            if os.path.exists(p): os.unlink(p)
+        for p in [src, actual_dst]:
+            if p and os.path.exists(p): os.unlink(p)
 
 
 def test_tiff_roundtrip_unicode():
-    """Unicode message embeds and decodes from TIFF metadata."""
+    """Unicode message embeds and decodes from TIFF metadata (stored as PNG)."""
     arr = make_random_rgb()
     src = save_temp(arr, ".tiff")
     dst = src.replace(".tiff", "_meta.tiff")
+    actual_dst = None
     try:
-        embed_metadata(src, "Héllo 世界 🌍", dst)
-        assert decode_metadata(dst) == "Héllo 世界 🌍"
+        result = embed_metadata(src, "Héllo 世界 🌍", dst)
+        actual_dst = result["output_path"]
+        assert decode_metadata(actual_dst) == "Héllo 世界 🌍"
     finally:
-        for p in [src, dst]:
-            if os.path.exists(p): os.unlink(p)
+        for p in [src, actual_dst]:
+            if p and os.path.exists(p): os.unlink(p)
 
 
 # ---------------------------------------------------------------------------
@@ -170,16 +174,18 @@ def test_tiff_pixels_exactly_unchanged():
     arr = make_random_rgb()
     src = save_temp(arr, ".tiff")
     dst = src.replace(".tiff", "_meta.tiff")
+    actual_dst = None
     try:
-        embed_metadata(src, "pixel check tiff", dst)
-        stego = np.array(Image.open(dst).convert("RGB"))
+        result = embed_metadata(src, "pixel check tiff", dst)
+        actual_dst = result["output_path"]
+        stego = np.array(Image.open(actual_dst).convert("RGB"))
         diff  = np.abs(arr.astype(int) - stego.astype(int))
         assert diff.max() == 0, (
             f"Metadata embedding modified TIFF pixels. Max delta: {diff.max()}"
         )
     finally:
-        for p in [src, dst]:
-            if os.path.exists(p): os.unlink(p)
+        for p in [src, actual_dst]:
+            if p and os.path.exists(p): os.unlink(p)
 
 
 def test_statistical_detectors_score_zero():

@@ -10,7 +10,6 @@ METHOD_DCT = 0b0010
 FORMAT_CODES = {
     "PNG"  : 0b0001,
     "JPEG" : 0b0010,
-    "BMP"  : 0b0011,
     "TIFF" : 0b0100,
     "WEBP" : 0b0101,
 }

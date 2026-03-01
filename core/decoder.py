@@ -123,7 +123,7 @@ def decode(image_path: str) -> DecodeResult:
             format_detected = format_str,
             error           = (
                 f"Format '{format_str}' is not supported for decoding. "
-                f"Supported: PNG, BMP, TIFF, JPEG, WebP."
+                f"Supported: PNG, JPEG, TIFF, WebP."
             ),
             warnings        = warnings,
         )
