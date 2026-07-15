@@ -1,32 +1,28 @@
 """
-Hierarchical Inference Classifier — Scry Phase 8
+ml/classifier.py — Hierarchical Inference Classifier
 
-Wires the general model and 5 type-specific binary models into a single
-classify() call used by the rest of the pipeline.
+Purpose:
+    Wires the general model and 5 type-specific binary models into a single
+    classify() call. Classifies an image as one of 6 types:
+    photographic, scanned, ai_generated, screenshot, synthetic, unknown.
 
-Inference logic:
-    1. Run general model → 5-class probability distribution
-    2. If top class confidence >= HIGH_CONFIDENCE_THRESHOLD (0.70):
-       → Trust the general model, return result directly
-    3. If confidence < threshold:
-       → Run all type-specific binary models
-       → Blend general + binary scores (60% general, 40% binary)
-       → Return blended result with method="ensemble"
-    4. If no model is loaded:
-       → Fall back to rule-based classification from type_classifier.py
+Inputs:
+    An RGB numpy image array (H x W x 3, uint8).
 
-This mirrors the architecture described in the Phase 8 plan.
+Outputs:
+    A ClassificationResult with: image type, confidence, class probabilities,
+    the weight table for this type, and reliability notes.
 
-Usage:
-    from ml.classifier import HierarchicalClassifier
+How it fits in:
+    Called by web/app.py in run_detection_pipeline().
+    Its output (image type) determines which detector weights the aggregator uses.
+    This is the entry point into the entire ML layer.
 
-    clf = HierarchicalClassifier()
-    clf.load()   # loads from data/models/ automatically
-
-    result = clf.classify(image_array)
-    print(result.image_type)       # "photographic", "scanned" etc.
-    print(result.confidence)       # 0.0 - 1.0
-    print(result.weight_table)     # detector weights for this type
+Inference logic (two-stage):
+    1. Run general model (5-class Random Forest) -> probability distribution
+    2. If top class confidence >= 0.70: trust the general model, return directly
+    3. If confidence < 0.70: blend with 5 binary "expert" models (60%/40%)
+    4. If no model loaded: fall back to rule-based classification
 """
 
 import pickle
@@ -44,16 +40,11 @@ from ml.type_classifier import (
     _classify_by_rules,
 )
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 DEFAULT_MODELS_DIR         = Path("data/models")
-HIGH_CONFIDENCE_THRESHOLD  = 0.70   # above this → trust general model alone
-BLEND_GENERAL_WEIGHT       = 0.60   # weight for general model in ensemble
-BLEND_BINARY_WEIGHT        = 0.40   # weight for binary models in ensemble
+HIGH_CONFIDENCE_THRESHOLD  = 0.70   # above this -> trust general model alone
+BLEND_GENERAL_WEIGHT       = 0.60   # weight for general model in ensemble blend
+BLEND_BINARY_WEIGHT        = 0.40   # weight for binary expert models in ensemble blend
 
-# Map from lowercase data label → ImageType constant (for weight table lookup)
 LABEL_TO_IMAGE_TYPE = {
     "photographic" : ImageType.PHOTOGRAPHIC,
     "scanned"      : ImageType.SCANNED,
@@ -73,10 +64,6 @@ MODEL_FILES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Classifier
-# ---------------------------------------------------------------------------
-
 class HierarchicalClassifier:
     """
     Two-stage hierarchical image type classifier.
@@ -87,35 +74,31 @@ class HierarchicalClassifier:
 
     Stage 2 — Binary ensemble (5 one-vs-rest Random Forests):
         Each model is an expert at detecting one image type.
-        Activated when general model is uncertain.
-        Scores are blended with general model output.
+        Activated when the general model is uncertain.
+        Scores are blended: 60% general + 40% binary.
 
     Fallback — Rule-based classifier:
-        Used when no trained models are available.
-        Confidence capped at 0.75, labelled "rules".
+        Used when no trained models are available on disk.
+        Confidence capped at 0.75 to reflect lower reliability.
     """
 
     def __init__(self, models_dir: Path = DEFAULT_MODELS_DIR):
         self.models_dir     = Path(models_dir)
-        self._general       = None   # {"rf": ..., "le": ...}
-        self._binary        = {}     # image_type -> sklearn RF
+        self._general       = None
+        self._binary        = {}
         self._loaded_types  = []
         self._is_loaded     = False
 
-    # -----------------------------------------------------------------------
-    # Loading
-    # -----------------------------------------------------------------------
-
-    def load(self, models_dir: Path = None) -> bool:
+    def load(self, models_dir: "Path | None" = None) -> bool:
         """
         Load all models from models_dir.
+
         Returns True if at least the general model loaded successfully.
-        Partial loads are accepted — missing binary models are silently skipped.
+        Missing binary models are silently skipped — partial loads are valid.
         """
         if models_dir:
             self.models_dir = Path(models_dir)
 
-        # Load general model
         general_path = self.models_dir / MODEL_FILES["general"]
         if not general_path.exists():
             print(f"[CLASSIFIER] General model not found at {general_path}. "
@@ -124,14 +107,13 @@ class HierarchicalClassifier:
 
         try:
             bundle          = _load_pkl(general_path)
-            self._general   = bundle["model"]   # {"rf": ..., "le": ...}
+            self._general   = bundle["model"]
             self._is_loaded = True
             print(f"[CLASSIFIER] General model loaded.")
         except Exception as e:
             print(f"[CLASSIFIER] Failed to load general model: {e}")
             return False
 
-        # Load binary models — non-fatal if missing
         for image_type, filename in MODEL_FILES.items():
             if image_type == "general":
                 continue
@@ -140,7 +122,7 @@ class HierarchicalClassifier:
                 continue
             try:
                 bundle = _load_pkl(path)
-                self._binary[image_type] = bundle["model"]   # sklearn RF
+                self._binary[image_type] = bundle["model"]
                 self._loaded_types.append(image_type)
             except Exception as e:
                 print(f"[CLASSIFIER] Could not load {filename}: {e}")
@@ -150,13 +132,9 @@ class HierarchicalClassifier:
               f"({', '.join(self._loaded_types) or 'none'}).")
         return True
 
-    # -----------------------------------------------------------------------
-    # Classify
-    # -----------------------------------------------------------------------
-
     def classify(self, image: np.ndarray) -> ClassificationResult:
         """
-        Classify an image into one of the five image types.
+        Classify an image into one of the six image types.
 
         Args:
             image: RGB numpy array (H x W x 3, uint8)
@@ -167,13 +145,11 @@ class HierarchicalClassifier:
         fv = extract_features(image)
 
         if not self._is_loaded:
-            # Rule-based fallback
             image_type, confidence, class_probs = _classify_by_rules(fv)
             method = "rules"
         else:
             image_type, confidence, class_probs, method = self._hierarchical_inference(fv)
 
-        # Map lowercase label to ImageType constant for weight/note lookup
         image_type_const = LABEL_TO_IMAGE_TYPE.get(image_type, ImageType.UNKNOWN)
 
         return ClassificationResult(
@@ -187,40 +163,37 @@ class HierarchicalClassifier:
             feature_vector      = fv,
         )
 
-    # -----------------------------------------------------------------------
-    # Internal inference
-    # -----------------------------------------------------------------------
-
     def _hierarchical_inference(
         self, fv: FeatureVector
     ) -> tuple[str, float, dict, str]:
         """
-        Run two-stage inference. Returns (image_type, confidence, probs, method).
+        Run two-stage inference.
+
+        Returns (image_type, confidence, probs, method).
+        method is one of: "ml_general", "ml_general_low_conf", "ml_ensemble".
         """
         X = fv.to_array().reshape(1, -1)
 
-        # Stage 1 — general model
         general_probs = self._run_general(X)
-        best_type     = max(general_probs, key=general_probs.get)
+        best_type     = max(general_probs, key=lambda k: general_probs[k])
         confidence    = general_probs[best_type]
 
         if confidence >= HIGH_CONFIDENCE_THRESHOLD:
             return best_type, confidence, general_probs, "ml_general"
 
-        # Stage 2 — blend with binary models if available
         if not self._binary:
-            # No binary models loaded — return general result with lower confidence
             return best_type, confidence, general_probs, "ml_general_low_conf"
 
+        # Blend general + binary expert models when general is uncertain
         binary_probs = self._run_binary_ensemble(X)
         blended      = self._blend(general_probs, binary_probs)
-        best_type    = max(blended, key=blended.get)
-        confidence   = float(blended[best_type])
+        best_type    = max(blended, key=lambda k: blended[k])
+        confidence   = blended[best_type]
 
         return best_type, confidence, blended, "ml_ensemble"
 
     def _run_general(self, X: np.ndarray) -> dict[str, float]:
-        """Run general 5-class model and return probability dict."""
+        """Run general 5-class model and return probability dict keyed by class label."""
         rf    = self._general["rf"]
         le    = self._general["le"]
         proba = rf.predict_proba(X)[0]
@@ -231,8 +204,8 @@ class HierarchicalClassifier:
 
     def _run_binary_ensemble(self, X: np.ndarray) -> dict[str, float]:
         """
-        Run each binary model and collect positive-class probabilities.
-        Normalise to sum to 1 so they can be blended with general probs.
+        Run each binary expert model and collect positive-class probabilities.
+        Normalises to sum to 1 so they can be blended with general probs.
         """
         raw = {}
         for image_type, rf in self._binary.items():
@@ -240,12 +213,10 @@ class HierarchicalClassifier:
             pos_idx           = 1 if proba.shape[0] > 1 else 0
             raw[image_type]   = float(proba[pos_idx])
 
-        # Fill in any missing types with 0
         for t in MODEL_FILES:
             if t != "general" and t not in raw:
                 raw[t] = 0.0
 
-        # Normalise
         total = sum(raw.values())
         if total < 1e-8:
             n = len(raw)
@@ -259,8 +230,7 @@ class HierarchicalClassifier:
     ) -> dict[str, float]:
         """
         Weighted blend of general and binary probability dicts.
-        Keys from general_probs are used (the label encoder classes).
-        Binary probs are matched by key — unmatched keys default to 0.
+        60% general + 40% binary.
         """
         blended = {}
         for t in general_probs:
@@ -268,16 +238,11 @@ class HierarchicalClassifier:
             b = binary_probs.get(t, 0.0)
             blended[t] = BLEND_GENERAL_WEIGHT * g + BLEND_BINARY_WEIGHT * b
 
-        # Renormalise
         total = sum(blended.values())
         if total < 1e-8:
             n = len(blended)
             return {t: 1.0 / n for t in blended}
         return {t: v / total for t, v in blended.items()}
-
-    # -----------------------------------------------------------------------
-    # Convenience
-    # -----------------------------------------------------------------------
 
     @property
     def is_loaded(self) -> bool:
@@ -285,7 +250,7 @@ class HierarchicalClassifier:
 
     def __repr__(self) -> str:
         if not self._is_loaded:
-            return "HierarchicalClassifier(not loaded — rule-based fallback)"
+            return "HierarchicalClassifier(not loaded \u2014 rule-based fallback)"
         return (
             f"HierarchicalClassifier("
             f"general=loaded, "
@@ -293,17 +258,15 @@ class HierarchicalClassifier:
         )
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
-
+# Module-level singleton — avoids reloading the large models on every request.
+# FastAPI handles multiple requests concurrently, but model loading is slow.
+# A singleton ensures models are loaded once at startup and shared across requests.
 _default_classifier: HierarchicalClassifier | None = None
 
 
 def get_classifier(models_dir: Path = DEFAULT_MODELS_DIR) -> HierarchicalClassifier:
     """
     Return the module-level singleton classifier, loading it if needed.
-    This avoids reloading models on every detection request.
 
     Usage:
         from ml.classifier import get_classifier
@@ -316,10 +279,6 @@ def get_classifier(models_dir: Path = DEFAULT_MODELS_DIR) -> HierarchicalClassif
         _default_classifier.load()
     return _default_classifier
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _load_pkl(path: Path) -> dict:
     with open(path, "rb") as f:

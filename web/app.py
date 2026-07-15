@@ -1,14 +1,33 @@
 """
-Scry — FastAPI backend
+web/app.py — FastAPI backend (the brain of the server)
+
+Purpose:
+    Defines all HTTP API endpoints that the React frontend talks to.
+    Also serves the compiled React build as static files in production.
+
+Inputs:
+    - Image files uploaded by the user (via multipart form)
+    - Form fields: message text, embedding method choice
+
+Outputs:
+    - JSON responses for /detect and /decode
+    - Binary file downloads for /embed (the stego image)
+
+Responsibilities:
+    - Receive and validate uploaded files
+    - Route requests to the correct pipeline (detect / embed / decode)
+    - Clean up temp files after each request
+    - Serve the React frontend for all non-API routes
+
+How it fits in:
+    start.py launches uvicorn which loads this file as `app`.
+    This file imports from core/, detectors/, and ml/ to do actual work.
 
 Endpoints:
-    POST /api/detect        — upload image, run full detection pipeline
-    POST /api/embed         — embed a message into an image
-    POST /api/decode        — decode a hidden message from an image
-    GET  /api/health        — health check
-
-Static files (React build) are served from /static.
-In production, the React app is built and served by FastAPI directly.
+    POST /api/detect   — upload image, run full detection pipeline
+    POST /api/embed    — embed a message into an image
+    POST /api/decode   — decode a hidden message from an image
+    GET  /api/health   — simple health check
 """
 
 import os
@@ -16,7 +35,7 @@ import sys
 from pathlib import Path as _Path
 
 # Add both project root (for core/, detectors/, ml/) and web/ (for config)
-# to sys.path so all imports resolve regardless of how uvicorn is launched
+# to sys.path so all imports resolve regardless of how uvicorn is launched.
 _ROOT = _Path(__file__).parent.parent   # scry/
 _WEB  = _Path(__file__).parent          # scry/web/
 for _p in [str(_WEB), str(_ROOT)]:
@@ -36,20 +55,12 @@ from starlette.background import BackgroundTask
 
 from config import settings
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
 logging.basicConfig(
     level   = getattr(logging, settings.log_level.upper(), logging.INFO),
-    format  = "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format  = "%(asctime)s [%(levelname)s] %(name)s \u2014 %(message)s",
     datefmt = "%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("scry")
-
-# ---------------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title       = settings.app_title,
@@ -67,14 +78,15 @@ app.add_middleware(
 
 TEMP_DIR = settings.temp_dir
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def save_upload(upload: UploadFile) -> Path:
     """
-    Read upload into a temp file.
-    Raises HTTPException 413 if file exceeds MAX_UPLOAD_MB.
+    Save an uploaded file to a temporary location on disk.
+
+    Why temp files: the detection and embedding libraries need a file path,
+    not an in-memory buffer. We save it, process it, then delete it.
+
+    Raises HTTPException 413 if the file exceeds the configured size limit.
     """
     data   = upload.file.read()
     size   = len(data)
@@ -89,7 +101,7 @@ def save_upload(upload: UploadFile) -> Path:
             )
         )
 
-    suffix = Path(upload.filename).suffix.lower() or ".png"
+    suffix = Path(upload.filename or "").suffix.lower() or ".png"
     path   = TEMP_DIR / f"{uuid.uuid4().hex}{suffix}"
 
     with open(path, "wb") as f:
@@ -100,7 +112,7 @@ def save_upload(upload: UploadFile) -> Path:
 
 
 def cleanup(*paths) -> None:
-    """Delete one or more temp files, silently ignoring missing files."""
+    """Delete one or more temp files after a request completes."""
     for path in paths:
         try:
             if path and Path(str(path)).exists():
@@ -111,6 +123,16 @@ def cleanup(*paths) -> None:
 
 
 def run_detection_pipeline(image_path: Path) -> dict:
+    """
+    Run the full steganography detection pipeline on a single image.
+
+    This is the most important function in the backend.
+    It orchestrates: format check -> image type classification
+    -> four statistical detectors -> type-aware score aggregation.
+
+    Returns a dict with: format info, image type, per-detector results,
+    and the final weighted verdict.
+    """
     import numpy as np
     from PIL import Image as PILImage
     from core.format_handler import classify as classify_format
@@ -137,11 +159,14 @@ def run_detection_pipeline(image_path: Path) -> dict:
     ]
     detector_results = [d.analyze(arr) for d in detectors]
 
+    # build_type_aware_aggregator picks different weights for each image type.
+    # A scanned image, for example, will downweight chi-square because it's
+    # unreliable on images with heavy film grain.
     agg        = build_type_aware_aggregator(type_result)
     agg_result = agg.aggregate(detector_results)
 
     logger.info(
-        f"Detection complete — verdict: {agg_result.final_verdict.value} "
+        f"Detection complete \u2014 verdict: {agg_result.final_verdict.value} "
         f"({agg_result.final_probability:.2%})"
     )
 
@@ -191,15 +216,11 @@ def run_detection_pipeline(image_path: Path) -> dict:
             "notes"              : agg_result.notes,
         },
         "warnings": (
-            ["Extension mismatch detected — file may have been renamed."]
+            ["Extension mismatch detected \u2014 file may have been renamed."]
             if fmt_info.extension_mismatch else []
         ),
     }
 
-
-# ---------------------------------------------------------------------------
-# API Routes
-# ---------------------------------------------------------------------------
 
 @app.get("/api/health")
 def health():
@@ -212,9 +233,13 @@ def health():
 
 @app.post("/api/detect")
 async def detect(file: UploadFile = File(...)):
+    """
+    Upload an image and run the full steganography detection pipeline.
+    Returns a JSON report with per-detector results and a final verdict.
+    """
     path = None
     try:
-        logger.info(f"Detect request — file: {file.filename}")
+        logger.info(f"Detect request \u2014 file: {file.filename}")
         path   = save_upload(file)
         result = run_detection_pipeline(path)
         return JSONResponse(content=result)
@@ -234,6 +259,16 @@ async def embed(
     message : str        = Form(...),
     method  : str        = Form("lsb_matching"),
 ):
+    """
+    Embed a secret message into an uploaded image using the chosen method.
+
+    Supported methods: lsb_replacement, lsb_matching, metadata, dwt.
+    Returns the stego image as a file download.
+
+    Why method branching here: each embedding method has different format
+    requirements. JPEG inputs are converted to PNG for spatial methods
+    because LSB embedding cannot survive JPEG re-compression.
+    """
     src_path    = None
     png_path    = None
     dst_path    = None
@@ -242,7 +277,7 @@ async def embed(
     VALID_METHODS = {"lsb_replacement", "lsb_matching", "metadata", "dwt"}
 
     try:
-        logger.info(f"Embed request — file: {file.filename}, method: {method}")
+        logger.info(f"Embed request \u2014 file: {file.filename}, method: {method}")
 
         if method not in VALID_METHODS:
             raise HTTPException(
@@ -264,9 +299,6 @@ async def embed(
                 )
             )
 
-        # ------------------------------------------------------------------
-        # Metadata
-        # ------------------------------------------------------------------
         if method == "metadata":
             from core.metadata_embedder import embed_metadata
 
@@ -276,14 +308,12 @@ async def embed(
 
             result      = embed_metadata(str(src_path), message, str(dst_path))
             output_path = Path(result["output_path"])
-            download_name = Path(file.filename).stem + "_stego" + output_path.suffix.lower()
+            download_name = Path(file.filename or "").stem + "_stego" + output_path.suffix.lower()
 
-        # ------------------------------------------------------------------
-        # DWT
-        # ------------------------------------------------------------------
         elif method == "dwt":
             from core.dwt_embedder import embed_dwt
 
+            # DWT requires lossless input; convert JPEG to PNG first
             if src_path.suffix.lower() in ('.jpg', '.jpeg'):
                 png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
                 Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
@@ -294,12 +324,12 @@ async def embed(
             dst_path      = TEMP_DIR / f"{uuid.uuid4().hex}_stego.png"
             result        = embed_dwt(embed_src, message, str(dst_path))
             output_path   = Path(result["output_path"])
-            download_name = Path(file.filename).stem + "_stego.png"
+            download_name = Path(file.filename or "").stem + "_stego.png"
 
-        # ------------------------------------------------------------------
-        # Spatial LSB
-        # ------------------------------------------------------------------
         else:
+            # Spatial LSB methods (lsb_replacement, lsb_matching)
+            # JPEG/lossy WebP must be converted to PNG first — LSB data
+            # would be destroyed by JPEG re-compression otherwise.
             if info.embedding_domain == EmbeddingDomain.DCT or src_path.suffix.lower() == ".webp":
                 png_path = TEMP_DIR / f"{uuid.uuid4().hex}_converted.png"
                 Image.open(str(src_path)).convert("RGB").save(str(png_path), format="PNG")
@@ -317,14 +347,15 @@ async def embed(
                 lsb_replace(embed_src, message, str(dst_path))
 
             output_path   = dst_path
-            download_name = Path(file.filename).stem + "_stego.png"
+            download_name = Path(file.filename or "").stem + "_stego.png"
 
-        logger.info(f"Embed complete — output: {output_path.name}")
+        logger.info(f"Embed complete \u2014 output: {output_path.name}")
 
         files_to_cleanup = [p for p in [src_path, png_path] if p]
         if dst_path and Path(str(dst_path)) != output_path:
             files_to_cleanup.append(dst_path)
 
+        # BackgroundTask runs cleanup AFTER the file response is fully sent
         return FileResponse(
             path       = str(output_path),
             media_type = "application/octet-stream",
@@ -345,18 +376,25 @@ async def embed(
 
 @app.post("/api/decode")
 async def decode_endpoint(file: UploadFile = File(...)):
+    """
+    Attempt to decode a hidden message from an uploaded image.
+
+    The decoder tries all embedding methods in priority order
+    (metadata -> DWT -> spatial LSB) until one succeeds.
+    Returns a JSON response whether or not a message was found.
+    """
     path = None
     try:
-        logger.info(f"Decode request — file: {file.filename}")
+        logger.info(f"Decode request \u2014 file: {file.filename}")
         path = save_upload(file)
 
         from core.decoder import decode
         result = decode(str(path))
 
         if result.success:
-            logger.info(f"Decode successful — method: {result.method_used}")
+            logger.info(f"Decode successful \u2014 method: {result.method_used}")
         else:
-            logger.info(f"Decode found no payload — {result.error}")
+            logger.info(f"Decode found no payload \u2014 {result.error}")
 
         return JSONResponse(content={
             "success"         : result.success,
@@ -377,10 +415,9 @@ async def decode_endpoint(file: UploadFile = File(...)):
             cleanup(path)
 
 
-# ---------------------------------------------------------------------------
-# Serve React frontend
-# ---------------------------------------------------------------------------
-
+# Serve the compiled React frontend from /static.
+# In development, the React dev server runs separately on port 5173.
+# In production (after `npm run build`), FastAPI serves everything.
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
 if STATIC_DIR.exists():
@@ -393,6 +430,8 @@ if STATIC_DIR.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
+        # Serve actual files if they exist, otherwise fall back to index.html.
+        # This is required for React Router to handle client-side navigation.
         file_path = STATIC_DIR / full_path
         if file_path.exists() and file_path.is_file():
             return FileResponse(str(file_path))

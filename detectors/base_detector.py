@@ -1,3 +1,17 @@
+"""
+detectors/base_detector.py — Abstract base class and shared types for all detectors
+
+Purpose:
+    Defines the interface every steganography detector must implement,
+    plus the shared data types (DetectorResult, Verdict, Reliability)
+    used throughout the detection pipeline.
+
+How it fits in:
+    Every concrete detector (chi_square, entropy, rs_analysis, histogram)
+    inherits from BaseDetector and must implement analyze().
+    The aggregator accepts a list of DetectorResult objects.
+"""
+
 import numpy as np
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -23,8 +37,8 @@ class DetectorResult:
     Standardized output for every detector in the pipeline.
 
     Attributes:
-        probability  : float 0–1. How likely the image contains steganography.
-        confidence   : float 0–1. How much to trust this detector's result
+        probability  : float 0-1. How likely the image contains steganography.
+        confidence   : float 0-1. How much to trust this detector's result
                        given the current image type. Overridden by the
                        type-aware layer in Phase 4.
         verdict      : Verdict enum — CLEAN, SUSPICIOUS, or STEGO.
@@ -67,10 +81,14 @@ class DetectorResult:
 def probability_to_verdict(probability: float) -> Verdict:
     """
     Convert a probability score to a Verdict enum.
-    Thresholds:
-        < 0.40  → CLEAN
-        0.40 – 0.69 → SUSPICIOUS
-        >= 0.70 → STEGO
+
+    Thresholds are deliberately conservative:
+        < 0.40  -> CLEAN
+        0.40 - 0.69 -> SUSPICIOUS
+        >= 0.70 -> STEGO
+
+    Why 0.70 for STEGO: false positives (flagging a clean image as STEGO)
+    are worse than false negatives in most use cases.
     """
     if probability >= 0.70:
         return Verdict.STEGO
@@ -83,10 +101,14 @@ def probability_to_verdict(probability: float) -> Verdict:
 class BaseDetector(ABC):
     """
     Abstract base class for all steganography detectors.
-    Every detector must implement the analyze() method and return
-    a DetectorResult. No detector should raise an unhandled exception —
-    all failure modes must be caught and returned as a result with
-    low confidence and an explanatory note.
+
+    Design contract:
+        - Every detector implements analyze() and returns a DetectorResult.
+        - No detector should raise an unhandled exception.
+        - All failure modes must be caught and returned as a result with
+          low confidence and an explanatory note.
+        - This ensures the aggregator always receives a full set of results
+          even if one detector fails on a particular image.
     """
 
     @property

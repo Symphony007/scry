@@ -1,19 +1,31 @@
 """
-Universal decoder entry point for all supported formats.
+core/decoder.py — Universal multi-method decoder
 
-This module is the single entry point for all decoding operations.
-The caller never needs to know which embedding method was used —
-the decoder tries all known methods in priority order.
+Purpose:
+    Single entry point for all decoding operations.
+    The caller never needs to know which embedding method was used —
+    the decoder tries all known methods in priority order until one succeeds.
 
-Decoding order:
-    1. Metadata  — cheapest check, no pixel reading required
-    2. DWT       — frequency domain, spatial formats only
-    3. Spatial   — LSB replacement or LSB matching (identical read path)
-    4. DCT       — JPEG coefficient domain (deferred, jpegio not available)
+Inputs:
+    A file path to any supported image (PNG, JPEG, TIFF, WebP).
 
-Failure philosophy:
-    Every failure mode must return a structured, human-readable error.
-    No silent corruption. No raw exceptions reaching the caller.
+Outputs:
+    A DecodeResult object containing: success flag, the decoded message,
+    which method succeeded, format info, and any warnings.
+
+Responsibilities:
+    - Classify the image format first
+    - Try each decode method in order: metadata -> DWT -> spatial LSB -> DCT
+    - Return structured results for every failure mode (never raw exceptions)
+
+How it fits in:
+    Called by web/app.py -> /api/decode endpoint.
+    Internally calls core/metadata_embedder, core/dwt_embedder, core/embedder.
+
+Why this design:
+    A user uploading a stego image doesn't know how it was embedded.
+    By trying all methods in a sensible order (cheapest first), we hide
+    that complexity from the user and the frontend.
 """
 
 from pathlib import Path
@@ -69,14 +81,14 @@ class DecodeResult:
 
 def decode(image_path: str) -> DecodeResult:
     """
-    Universal decoder — tries all known embedding methods in order
+    Universal decoder: tries all known embedding methods in order
     until one succeeds or all are exhausted.
 
-    Tries in this order:
-        1. Metadata   — tEXt chunk (PNG), EXIF (JPEG), tag (TIFF)
-        2. DWT        — frequency domain R channel (spatial formats only)
+    Decoding order (cheapest first):
+        1. Metadata   — reads file chunks, no pixel access
+        2. DWT        — frequency domain, spatial formats only
         3. Spatial    — LSB replacement or LSB matching (identical read path)
-        4. DCT        — JPEG coefficient domain (returns informative error)
+        4. DCT        — JPEG images fall here; returns a helpful error message
 
     Args:
         image_path: path to the stego image (any supported format)
@@ -128,36 +140,24 @@ def decode(image_path: str) -> DecodeResult:
             warnings        = warnings,
         )
 
-    # ---------------------------------------------------------------------------
-    # Step 1 — Try metadata decode first (cheap, no pixel reads)
-    # Supported on PNG, JPEG, TIFF. Fails fast on BMP and WebP.
-    # ---------------------------------------------------------------------------
+    # Step 1: Metadata is cheapest — only reads file headers, no pixel work.
     result = _try_metadata(image_path, format_str, warnings)
     if result.success:
         return result
 
-    # ---------------------------------------------------------------------------
-    # Step 2 — Try DWT decode (spatial formats only)
-    # JPEG inputs won't have DWT — DWT always outputs PNG
-    # ---------------------------------------------------------------------------
+    # Steps 2 & 3: DWT and spatial LSB only apply to lossless (non-JPEG) images.
+    # JPEG's lossy compression would have already destroyed any spatial LSB payload.
     if info.embedding_domain == EmbeddingDomain.SPATIAL:
         result = _try_dwt(image_path, format_str, warnings)
         if result.success:
             return result
 
-    # ---------------------------------------------------------------------------
-    # Step 3 — Try spatial LSB decode
-    # Works for LSB replacement and LSB matching — both use identical read path
-    # ---------------------------------------------------------------------------
     if info.embedding_domain == EmbeddingDomain.SPATIAL:
         return _decode_spatial_path(image_path, format_str, warnings)
 
-    # ---------------------------------------------------------------------------
-    # Step 4 — DCT domain (JPEG / lossy WebP)
-    # If we reach here the image is JPEG and metadata decode already failed.
-    # This means either: no Scry payload at all, or was embedded with a
-    # spatial method (which would have converted to PNG first).
-    # ---------------------------------------------------------------------------
+    # Step 4: JPEG images reach here only after metadata failed.
+    # If someone embedded via LSB on a JPEG, the output was actually a PNG —
+    # the user needs to upload that PNG, not the original JPEG.
     if info.embedding_domain == EmbeddingDomain.DCT:
         return DecodeResult(
             success         = False,
@@ -167,7 +167,7 @@ def decode(image_path: str) -> DecodeResult:
             error           = (
                 "No hidden message found in this JPEG. "
                 "If you embedded using LSB Matching, LSB Replacement, or DWT, "
-                "the output would have been a PNG file — please upload that PNG. "
+                "the output would have been a PNG file \u2014 please upload that PNG. "
                 "If you embedded using Metadata, the EXIF data may have been "
                 "stripped by a social media platform or image editor."
             ),
@@ -184,16 +184,13 @@ def decode(image_path: str) -> DecodeResult:
     )
 
 
-# ---------------------------------------------------------------------------
-# Method-specific decode attempts
-# These return DecodeResult — success=False just means "not this method",
-# not a fatal error. The main decode() loop tries the next method.
-# ---------------------------------------------------------------------------
-
 def _try_metadata(
     image_path: str, format_str: str, warnings: list[str]
 ) -> DecodeResult:
-    """Try metadata decode. Returns success=False silently if no payload found."""
+    """
+    Attempt metadata decode. Returns success=False silently if no payload found.
+    A ValueError from decode_metadata means "no payload", not an error.
+    """
     try:
         from core.metadata_embedder import decode_metadata
         message = decode_metadata(image_path)
@@ -205,7 +202,6 @@ def _try_metadata(
             warnings        = warnings,
         )
     except ValueError:
-        # No metadata payload — not an error, just try next method
         return DecodeResult(
             success         = False,
             message         = "",
@@ -224,7 +220,7 @@ def _try_metadata(
 def _try_dwt(
     image_path: str, format_str: str, warnings: list[str]
 ) -> DecodeResult:
-    """Try DWT decode. Returns success=False silently if no payload found."""
+    """Attempt DWT decode. Returns success=False silently if no payload found."""
     try:
         from core.dwt_embedder import decode_dwt
         message = decode_dwt(image_path)
@@ -255,9 +251,9 @@ def _decode_spatial_path(
     image_path: str, format_str: str, warnings: list[str]
 ) -> DecodeResult:
     """
-    Decode using spatial LSB decoder — final attempt for spatial formats.
-    Unlike _try_metadata and _try_dwt, this returns a proper error
-    if it fails because there are no more methods to try.
+    Decode using spatial LSB — the final attempt for spatial formats.
+    Unlike _try_metadata and _try_dwt, this returns a meaningful error
+    because there are no more methods to try after this one.
     """
     try:
         from core.embedder import decode as spatial_decode
@@ -275,7 +271,7 @@ def _decode_spatial_path(
         if "Terminator not found" in error_str:
             error_str = (
                 "No hidden message found in this image. "
-                "Tried metadata, DWT, and spatial LSB — all failed. "
+                "Tried metadata, DWT, and spatial LSB \u2014 all failed. "
                 "The image may not contain a Scry-embedded message, "
                 "or it was modified after embedding."
             )
@@ -296,7 +292,7 @@ def _decode_spatial_path(
             format_detected = format_str,
             error           = (
                 "No hidden message found in this image. "
-                "Tried metadata, DWT, and spatial LSB — all failed. "
+                "Tried metadata, DWT, and spatial LSB \u2014 all failed. "
                 "The image may have been modified or re-saved after embedding."
             ),
             warnings        = warnings,
@@ -316,6 +312,7 @@ def _decode_spatial_path(
 def decode_with_format_hint(image_path: str, expected_format: str) -> DecodeResult:
     """
     Decode with an explicit format hint for cross-format mismatch diagnosis.
+    Adds a warning if the detected format differs from what was expected.
     """
     result = decode(image_path)
     if result.format_detected.upper() != expected_format.upper():

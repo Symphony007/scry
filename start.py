@@ -1,11 +1,19 @@
 """
-Scry — Production start script
+start.py — Application entry point
 
-Builds the React frontend then starts the FastAPI server.
+Purpose:
+    Builds the React frontend and then starts the FastAPI backend server.
+    This is the ONLY file you run to launch the entire application.
 
-Usage:
-    python start.py            — build frontend + start server
-    python start.py --no-build — skip frontend build, just start server
+Inputs:
+    Optional CLI flag: --no-build (skips the npm build step)
+
+Outputs:
+    A running uvicorn server at http://127.0.0.1:8000
+
+How it fits in:
+    run `python start.py` -> builds frontend -> starts backend
+    The backend (web/app.py) then serves both the API and the React UI.
 """
 
 import subprocess
@@ -23,7 +31,7 @@ def run(cmd, cwd=None, check=True):
     return result.returncode
 
 def build_frontend():
-    print("\n── Building React frontend ──────────────────────────")
+    print("\n\u2500\u2500 Building React frontend \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
 
     if run("node --version", check=False) != 0:
         print("ERROR: Node.js not found. Install Node.js 18+ to build the frontend.")
@@ -31,17 +39,18 @@ def build_frontend():
 
     run("npm install", cwd=FRONTEND_DIR)
     run("npm run build", cwd=FRONTEND_DIR)
-    print("── Frontend build complete ──────────────────────────")
+    print("\u2500\u2500 Frontend build complete \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
 
 def start_server():
     port  = os.getenv("PORT", "8000")
     host  = os.getenv("HOST", "127.0.0.1")
     debug = os.getenv("DEBUG", "false").lower() == "true"
 
-    print(f"\n── Starting Scry on http://{host}:{port} ────────────")
+    print(f"\n\u2500\u2500 Starting Scry on http://{host}:{port} \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
 
-    # core/, detectors/, ml/ live at ROOT (scry/) not inside web/
-    # Add both ROOT and WEB to PYTHONPATH so all imports resolve
+    # core/, detectors/, ml/ live at ROOT (scry/) not inside web/.
+    # Both ROOT and WEB are added to PYTHONPATH so all imports resolve
+    # regardless of where uvicorn is launched from.
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     paths = [str(ROOT_DIR), str(WEB_DIR)]
@@ -50,12 +59,13 @@ def start_server():
     env["PYTHONPATH"] = os.pathsep.join(paths)
 
     os.chdir(WEB_DIR)
+    reload_flag = ["--reload"] if debug else []
     os.execvpe("uvicorn", [
         "uvicorn", "app:app",
         "--host", host,
-        "--port", str(port),
+        "--port", port,
         "--workers", "1",
-        *(["--reload"] if debug else []),
+        *reload_flag,
     ], env)
 
 if __name__ == "__main__":

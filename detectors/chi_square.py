@@ -1,3 +1,26 @@
+"""
+detectors/chi_square.py — Chi-Square LSB pair equality detector
+
+Purpose:
+    Detects LSB replacement steganography by testing whether adjacent
+    pixel value pairs (0,1), (2,3), (4,5)... are suspiciously equal.
+
+How it works:
+    In a natural image, pair counts are uneven: value 128 might appear
+    5000 times and value 129 might appear 3200 times. When LSB replacement
+    is applied, flipping an LSB converts 128 -> 129 or vice versa,
+    forcing these pairs toward equality. The chi-square test measures
+    how statistically unlikely this equality is in a natural image.
+
+Critical probability direction:
+    probability = p_value directly.
+    A HIGH p_value means the test FAILED to reject pair equality.
+    Failing to reject equality IS the stego signal.
+    NEVER use 1 - p_value here — that would invert the detection.
+
+Interview relevance: HIGH (classic steganography detection method)
+"""
+
 import numpy as np
 from scipy.stats import chisquare
 from detectors.base_detector import (
@@ -12,20 +35,7 @@ class ChiSquareDetector(BaseDetector):
     """
     Detects LSB steganography by measuring pixel value pair equality.
 
-    How it works:
-        In a natural image, adjacent pixel value pairs (0,1), (2,3), (4,5)...
-        have unequal counts — the distribution is uneven. LSB replacement
-        forces these pairs toward equality because flipping an LSB converts
-        a value to its neighbor (e.g. 128 → 129 or vice versa).
-        The chi-square test measures how suspiciously equal these pairs are.
-
-    Probability direction (CRITICAL — must never be inverted):
-        probability = p_value directly.
-        A HIGH p-value means the test FAILED to reject pair equality.
-        Failing to reject equality IS the stego signal.
-        Do NOT use 1 - p_value.
-
-    Known limitations:
+    Known limitations (important for interviews):
         - Unreliable on scanned/analog images (Mandrill problem)
         - Unreliable on AI-generated images
         - Fails on payloads below ~3% of capacity
@@ -47,14 +57,12 @@ class ChiSquareDetector(BaseDetector):
             DetectorResult with probability = p_value from chi-square test.
         """
         try:
-            # Extract R channel and compute value frequency histogram
             r_channel = image[:, :, 0].flatten()
             counts = np.bincount(r_channel, minlength=256)
 
             # Build observed and expected pair arrays.
-            # Pairs: (0,1), (2,3), (4,5), ..., (254,255)
-            # Expected: if LSB replacement occurred, each pair's total
-            # should be split equally between the two values.
+            # If LSB replacement occurred, each pair's total should be
+            # split equally between the two values.
             observed  = []
             expected  = []
 
@@ -70,7 +78,6 @@ class ChiSquareDetector(BaseDetector):
             observed = np.array(observed, dtype=np.float64)
             expected = np.array(expected, dtype=np.float64)
 
-            # Remove pairs where expected is zero to avoid division errors
             mask = expected > 0
             observed = observed[mask]
             expected = expected[mask]
@@ -88,8 +95,6 @@ class ChiSquareDetector(BaseDetector):
 
             _, p_value = chisquare(f_obs=observed, f_exp=expected)
 
-            # probability = p_value directly.
-            # High p_value → pairs are suspiciously equal → stego signal.
             probability = float(p_value)
 
             notes = (

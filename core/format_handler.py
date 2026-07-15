@@ -1,4 +1,28 @@
-# core/format_handler.py
+"""
+core/format_handler.py — Image format classifier
+
+Purpose:
+    Reads an image's actual bytes (not just its file extension) to determine
+    what format it really is, whether it supports lossless embedding, and
+    whether the extension matches the true format.
+
+Inputs:
+    A file path to any image on disk.
+
+Outputs:
+    A FormatInfo dataclass with: format, compression type, embedding domain,
+    dimensions, bit depth, color space, and metadata presence.
+
+Responsibilities:
+    - Detect format from magic bytes (first few bytes of the file)
+    - Classify as SPATIAL or DCT embedding domain
+    - Detect extension mismatches (e.g. a JPEG renamed to .png)
+    - Gate all embedding/detection: unsupported formats are rejected here
+
+How it fits in:
+    Called first by both the embed and detect pipelines before any
+    pixel-level work begins. Everything else depends on its output.
+"""
 
 import struct
 from dataclasses import dataclass
@@ -21,8 +45,8 @@ class CompressionType(Enum):
 
 
 class EmbeddingDomain(Enum):
-    SPATIAL     = "SPATIAL"    # LSB replacement works here
-    DCT         = "DCT"        # Frequency domain — JPEG, lossy WebP
+    SPATIAL     = "SPATIAL"    # pixel-level embedding (LSB, DWT)
+    DCT         = "DCT"        # frequency-domain embedding (JPEG coefficients)
     UNSUPPORTED = "UNSUPPORTED"
 
 
@@ -60,21 +84,17 @@ class FormatInfo:
     notes              : str
 
 
-# ---------------------------------------------------------------------------
-# Magic byte signatures for format detection
-# These are read from the actual file — never trust the extension alone
-# ---------------------------------------------------------------------------
-
+# Magic bytes — the "fingerprint" at the start of every file format.
+# We read these instead of trusting the extension because extensions can be
+# changed by anyone. A JPEG masquerading as a .png would break all detection.
 MAGIC_PNG       = b'\x89PNG\r\n\x1a\n'
 MAGIC_JPEG      = b'\xff\xd8\xff'
 MAGIC_WEBP_RIFF = b'RIFF'
 MAGIC_WEBP_WEBP = b'WEBP'  # at offset 8
 
-# TIFF has two valid byte orders
-MAGIC_TIFF_LE = b'II\x2a\x00'  # little-endian
-MAGIC_TIFF_BE = b'MM\x00\x2a'  # big-endian
+MAGIC_TIFF_LE = b'II\x2a\x00'  # little-endian TIFF
+MAGIC_TIFF_BE = b'MM\x00\x2a'  # big-endian TIFF
 
-# Expected extensions per format
 FORMAT_EXTENSIONS = {
     ImageFormat.PNG  : {".png"},
     ImageFormat.JPEG : {".jpg", ".jpeg"},
@@ -92,8 +112,7 @@ def _read_magic(path: str, n: int = 12) -> bytes:
 def _detect_format(magic: bytes) -> ImageFormat:
     """
     Identify image format from magic bytes.
-    Order matters — check more specific signatures first.
-    BMP is intentionally not detected — it is no longer a supported format.
+    Order matters: more specific signatures are checked first.
     """
     if magic[:8] == MAGIC_PNG:
         return ImageFormat.PNG
@@ -109,11 +128,14 @@ def _detect_format(magic: bytes) -> ImageFormat:
 def _is_webp_lossy(path: str) -> bool:
     """
     Determine if a WebP file uses lossy compression.
-    WebP files contain a chunk type identifier:
-        'VP8 ' (with trailing space) → lossy
-        'VP8L'                       → lossless
-        'VP8X'                       → extended (may be either)
-    Reads bytes 12–16 to identify the chunk type.
+
+    WebP files contain a chunk type identifier at bytes 12-16:
+        'VP8 ' (with trailing space) -> lossy
+        'VP8L'                       -> lossless
+        'VP8X'                       -> extended (defaults to lossy)
+
+    Why this matters: lossless WebP supports spatial (LSB) embedding,
+    lossy WebP does not — just like JPEG.
     """
     try:
         with open(path, "rb") as f:
@@ -123,10 +145,9 @@ def _is_webp_lossy(path: str) -> bool:
             return True
         if chunk_type == b'VP8L':
             return False
-        # VP8X is extended format — check sub-chunks; default to lossy
-        return True
+        return True  # safe default for VP8X extended format
     except Exception:
-        return True  # safe default
+        return True
 
 
 def _has_exif(path: str, fmt: ImageFormat) -> bool:
@@ -134,7 +155,6 @@ def _has_exif(path: str, fmt: ImageFormat) -> bool:
     Check for EXIF metadata presence.
     JPEG: look for APP1 marker (0xFFE1) in the first 64KB.
     PNG: look for 'eXIf' chunk identifier.
-    Others: not checked (return False).
     """
     try:
         with open(path, "rb") as f:
@@ -150,31 +170,20 @@ def _has_exif(path: str, fmt: ImageFormat) -> bool:
 
 def _read_image_dimensions(path: str, fmt: ImageFormat) -> tuple[int, int]:
     """
-    Read image dimensions directly from file bytes without full decode.
-    Returns (width, height).
-    Falls back to (0, 0) on any error.
+    Read image dimensions directly from file bytes without fully decoding.
+    PNG dimensions can be read from a known byte offset (bytes 16-23),
+    avoiding a full Pillow decode for a cheap metadata check.
     """
     try:
         with open(path, "rb") as f:
             data = f.read(32)
 
         if fmt == ImageFormat.PNG:
-            # PNG: width at bytes 16-19, height at 20-23 (big-endian)
             w = struct.unpack(">I", data[16:20])[0]
             h = struct.unpack(">I", data[20:24])[0]
             return w, h
 
-        if fmt == ImageFormat.JPEG:
-            from PIL import Image
-            with Image.open(path) as img:
-                return img.size  # (width, height)
-
-        if fmt == ImageFormat.WEBP:
-            from PIL import Image
-            with Image.open(path) as img:
-                return img.size
-
-        if fmt == ImageFormat.TIFF:
+        if fmt in (ImageFormat.JPEG, ImageFormat.WEBP, ImageFormat.TIFF):
             from PIL import Image
             with Image.open(path) as img:
                 return img.size
@@ -186,10 +195,7 @@ def _read_image_dimensions(path: str, fmt: ImageFormat) -> tuple[int, int]:
 
 
 def _read_bit_depth_and_color(path: str, fmt: ImageFormat) -> tuple[int, str, bool]:
-    """
-    Read bit depth, color space, and alpha presence using Pillow.
-    Returns (bit_depth, color_space_string, has_alpha).
-    """
+    """Read bit depth, color space, and alpha presence using Pillow."""
     try:
         from PIL import Image
         with Image.open(path) as img:
@@ -229,7 +235,7 @@ def classify(path: str) -> FormatInfo:
     This is the single entry point called before any embedding or detection.
 
     Supported formats: PNG, JPEG, WebP, TIFF.
-    Any other format (including BMP) returns is_supported=False.
+    Any other format returns is_supported=False.
 
     Args:
         path: path to the image file
@@ -248,11 +254,9 @@ def classify(path: str) -> FormatInfo:
     fmt    = _detect_format(magic)
     suffix = p.suffix.lower()
 
-    # Check for extension mismatch
     expected_exts      = FORMAT_EXTENSIONS.get(fmt, set())
     extension_mismatch = bool(expected_exts) and suffix not in expected_exts
 
-    # Determine compression type
     if fmt == ImageFormat.JPEG:
         compression = CompressionType.LOSSY
     elif fmt == ImageFormat.WEBP:
@@ -262,7 +266,6 @@ def classify(path: str) -> FormatInfo:
     else:
         compression = CompressionType.UNKNOWN
 
-    # Determine embedding domain
     if fmt == ImageFormat.JPEG:
         domain = EmbeddingDomain.DCT
     elif fmt == ImageFormat.WEBP and compression == CompressionType.LOSSY:
@@ -274,7 +277,6 @@ def classify(path: str) -> FormatInfo:
     else:
         domain = EmbeddingDomain.UNSUPPORTED
 
-    # Only PNG, JPEG, WebP, TIFF are supported
     is_supported = fmt in (
         ImageFormat.PNG,
         ImageFormat.JPEG,

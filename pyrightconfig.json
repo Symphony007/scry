@@ -1,0 +1,25 @@
+{
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows",
+  "venvPath": ".",
+  "venv": "venv",
+  "include": [
+    "core",
+    "detectors",
+    "ml",
+    "web",
+    "start.py"
+  ],
+  "exclude": [
+    "venv",
+    "node_modules",
+    "data",
+    "static",
+    "__pycache__"
+  ],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "reportUndefinedVariable": false,
+  "reportGeneralTypeIssues": false,
+  "typeCheckingMode": "off"
+}

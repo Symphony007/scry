@@ -1,4 +1,30 @@
-# detectors/aggregator.py
+"""
+detectors/aggregator.py — Weighted score aggregator
+
+Purpose:
+    Combines the individual results from all detectors into a single
+    final verdict and probability. This is where type-aware weighting happens.
+
+Inputs:
+    - A list of DetectorResult objects (one per detector)
+    - Optional: a custom weight dict (from the type-aware layer)
+
+Outputs:
+    - AggregatorResult with: final probability, verdict, confidence,
+      per-detector weights used, and payload estimate from RS Analysis.
+
+Why weighted aggregation:
+    Not all detectors are equally reliable on all image types.
+    On a scanned photo (Mandrill problem), chi-square gives false positives
+    because film grain naturally creates pair equality. The type-aware
+    layer reduces chi-square's weight to 0.3 for scanned images.
+    This is the key architectural insight of the project.
+
+How it fits in:
+    build_type_aware_aggregator() is called after image type classification.
+    It reads the weight table from ml/type_classifier.py's WEIGHT_TABLES
+    and returns a configured ScoreAggregator ready to combine results.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +32,9 @@ import numpy as np
 from detectors.base_detector import DetectorResult, Verdict, Reliability, probability_to_verdict
 
 
-# Default detector weights for photographic images.
-# These are overridden dynamically by the type-aware layer in Phase 4.
+# Default weights used when no type-specific table is available.
+# RS Analysis has the highest weight because it captures spatial disruption —
+# a signal that is harder to remove than the histogram fingerprint chi-square sees.
 DEFAULT_WEIGHTS = {
     "RS Analysis" : 2.0,
     "Chi-Square"  : 1.5,
@@ -25,7 +52,7 @@ class AggregatorResult:
         final_verdict     : Verdict enum derived from final_probability
         confidence        : weighted average confidence across all detectors
         detector_results  : list of individual DetectorResult objects
-        weights_used      : dict of detector name → weight actually applied
+        weights_used      : dict of detector name -> weight actually applied
         payload_estimate  : best payload estimate from RS Analysis if available
         notes             : plain-English summary of the aggregation
     """
@@ -75,20 +102,18 @@ class ScoreAggregator:
     Combines detector results into a single weighted verdict.
 
     Design principles:
-        - Accepts a weight dictionary so the type-aware layer (Phase 4)
-          can override weights dynamically per image type.
+        - Accepts a weight dictionary so the type-aware layer can override
+          weights per image type without modifying the aggregator.
         - Detectors with weight 0.0 are excluded from aggregation entirely.
-        - Confidence is weighted by the same weights as probability.
         - Payload estimate is taken from RS Analysis when available.
-        - Never hard-codes weights — always accepts them as parameters.
     """
 
     def __init__(self, weights: dict[str, float] | None = None):
         """
         Args:
             weights: dict mapping detector name to float weight.
+                     Pass a type-specific dict to override for a specific image type.
                      Defaults to DEFAULT_WEIGHTS if not provided.
-                     Pass a custom dict to override for a specific image type.
         """
         self.weights = weights if weights is not None else DEFAULT_WEIGHTS.copy()
 
@@ -130,7 +155,8 @@ class ScoreAggregator:
             weighted_conf_sum += result.confidence  * weight
             total_weight      += weight
 
-            # Extract payload estimate from RS Analysis
+            # Use RS Analysis payload estimate when available —
+            # it's the most reliable payload size estimate in the pipeline.
             if result.detector == "RS Analysis":
                 rs_payload = result.raw_stats.get("payload_estimate_pct")
                 if rs_payload is not None:
@@ -144,14 +170,13 @@ class ScoreAggregator:
                 detector_results  = results,
                 weights_used      = weights_used,
                 payload_estimate  = None,
-                notes             = "All detector weights are zero — manual review required.",
+                notes             = "All detector weights are zero \u2014 manual review required.",
             )
 
         final_probability = weighted_prob_sum / total_weight
         final_confidence  = weighted_conf_sum / total_weight
         final_verdict     = probability_to_verdict(final_probability)
 
-        # Build a plain-English summary
         unreliable = [
             r.detector for r in results
             if r.reliability in (Reliability.LOW, Reliability.UNRELIABLE)
@@ -181,25 +206,22 @@ class ScoreAggregator:
         )
 
 
-def build_type_aware_aggregator(classification_result) -> ScoreAggregator:    
+def build_type_aware_aggregator(classification_result) -> ScoreAggregator:
     """
-    Build a ScoreAggregator with weights selected for the detected image type.
+    Build a ScoreAggregator with weights tuned for the detected image type.
 
-    This is the single function that connects Phase 4 type classification
-    to Phase 2 score aggregation — the architectural fix for the Mandrill
-    problem.
+    This is the critical function that connects image type classification
+    (ml/classifier.py) to score aggregation (this file).
+
+    Without this function, every image would use DEFAULT_WEIGHTS —
+    causing false positives on scanned and AI-generated images because
+    those image types naturally exhibit stego-like statistical properties.
 
     Args:
-        classification_result: ClassificationResult from ImageTypeClassifier
+        classification_result: ClassificationResult from HierarchicalClassifier
 
     Returns:
         ScoreAggregator configured with type-appropriate detector weights.
-
-    Usage:
-        clf    = ImageTypeClassifier()
-        result = clf.classify(image)
-        agg    = build_type_aware_aggregator(result)
-        final  = agg.aggregate(detector_results)
     """
     from ml.type_classifier import WEIGHT_TABLES
     from ml.type_features import ImageType
